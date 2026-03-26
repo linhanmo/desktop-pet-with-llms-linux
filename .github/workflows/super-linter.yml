@@ -1,0 +1,246 @@
+# This workflow executes several linters on changed files based on languages used in your code base whenever
+# you push a code or open a pull request.
+#
+# You can adjust the behavior by modifying this file.
+# For more information, see:
+# https://github.com/github/super-linter
+name: Lint Code Base
+
+on:
+  push:
+    branches:
+      - "main"
+      - "dev"
+      - "feat/**"
+      - "fix/**"
+      - "chore/**"
+      - "docs/**"
+      - "refactor/**"
+      - "perf/**"
+      - "test/**"
+      - "build/**"
+      - "ci/**"
+      - "hotfix/**"
+      - "revert/**"
+  pull_request:
+    branches:
+      - "main"
+      - "dev"
+      - "feat/**"
+      - "fix/**"
+      - "chore/**"
+      - "docs/**"
+      - "refactor/**"
+      - "perf/**"
+      - "test/**"
+      - "build/**"
+      - "ci/**"
+      - "hotfix/**"
+      - "revert/**"
+
+permissions:
+  contents: read
+  checks: write
+  statuses: write
+
+jobs:
+  guard-platform-branch-diff:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'dev' && (
+        contains(github.head_ref, '/windows') ||
+        contains(github.head_ref, '/linux') ||
+        contains(github.head_ref, '/macos')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve platform from branch
+        id: platform
+        env:
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_BRANCH" == */windows* ]]; then
+            PLATFORM="windows"
+          elif [[ "$HEAD_BRANCH" == */linux* ]]; then
+            PLATFORM="linux"
+          elif [[ "$HEAD_BRANCH" == */macos* ]]; then
+            PLATFORM="macos"
+          else
+            echo "Unsupported platform branch: $HEAD_BRANCH" >&2
+            exit 1
+          fi
+          echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+
+      - name: Guard platform branch diff scope
+        run: >-
+          python3 scripts/check_platform_branch_diff.py
+          --platform "${{ steps.platform.outputs.platform }}"
+          --base "${{ github.event.pull_request.base.sha }}"
+          --head "${{ github.sha }}"
+          --allowlist-file ".github/platform-diff-allowlist.txt"
+
+  enforce-platform-branch-policy:
+    if: github.event_name == 'pull_request' && github.base_ref == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR head branch for dev
+        env:
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          case "$HEAD_BRANCH" in
+            feat/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            fix/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            chore/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            docs/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            refactor/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            perf/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            test/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            build/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            ci/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            hotfix/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            revert/*)
+              echo "Branch policy passed: $HEAD_BRANCH"
+              ;;
+            *)
+              echo "PR to dev must come from one of allowed branch prefixes:" >&2
+              echo "  - feat/xxx" >&2
+              echo "  - fix/xxx" >&2
+              echo "  - chore/xxx" >&2
+              echo "  - docs/xxx" >&2
+              echo "  - refactor/xxx" >&2
+              echo "  - perf/xxx" >&2
+              echo "  - test/xxx" >&2
+              echo "  - build/xxx" >&2
+              echo "  - ci/xxx" >&2
+              echo "  - hotfix/xxx" >&2
+              echo "  - revert/xxx" >&2
+              echo "Current head branch: $HEAD_BRANCH" >&2
+              exit 1
+              ;;
+          esac
+
+  lint-platform-macro-style:
+    if: >-
+      (github.event_name == 'push' && (
+        startsWith(github.ref, 'refs/heads/feat/') ||
+        startsWith(github.ref, 'refs/heads/fix/') ||
+        startsWith(github.ref, 'refs/heads/chore/') ||
+        startsWith(github.ref, 'refs/heads/docs/') ||
+        startsWith(github.ref, 'refs/heads/refactor/') ||
+        startsWith(github.ref, 'refs/heads/perf/') ||
+        startsWith(github.ref, 'refs/heads/test/') ||
+        startsWith(github.ref, 'refs/heads/build/') ||
+        startsWith(github.ref, 'refs/heads/ci/') ||
+        startsWith(github.ref, 'refs/heads/hotfix/') ||
+        startsWith(github.ref, 'refs/heads/revert/')
+      )) ||
+      (github.event_name == 'pull_request' && (
+        startsWith(github.head_ref, 'feat/') ||
+        startsWith(github.head_ref, 'fix/') ||
+        startsWith(github.head_ref, 'chore/') ||
+        startsWith(github.head_ref, 'docs/') ||
+        startsWith(github.head_ref, 'refactor/') ||
+        startsWith(github.head_ref, 'perf/') ||
+        startsWith(github.head_ref, 'test/') ||
+        startsWith(github.head_ref, 'build/') ||
+        startsWith(github.head_ref, 'ci/') ||
+        startsWith(github.head_ref, 'hotfix/') ||
+        startsWith(github.head_ref, 'revert/')
+      ))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve target platform
+        id: platform
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BRANCH="$HEAD_BRANCH"
+          else
+            BRANCH="$REF_NAME"
+          fi
+
+          if [[ "$BRANCH" == */windows* ]]; then
+            PLATFORM="windows"
+          elif [[ "$BRANCH" == */linux* ]]; then
+            PLATFORM="linux"
+          elif [[ "$BRANCH" == */macos* ]]; then
+            PLATFORM="macos"
+          else
+            PLATFORM="all"
+          fi
+          echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+          echo "Resolved platform=$PLATFORM from branch=$BRANCH"
+
+      - name: Enforce platform macro style
+        run: python3 scripts/check_platform_macro_style.py --root src --platform "${{ steps.platform.outputs.platform }}"
+
+  lint-code:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Full git history is needed to get a proper list of changed files within `super-linter`
+          fetch-depth: 0
+
+      - name: Lint C/C++ Code Scope
+        uses: github/super-linter@v7
+        env:
+          VALIDATE_ALL_CODEBASE: true
+          DEFAULT_BRANCH: "main"
+          FILTER_REGEX_INCLUDE: "(^|.*/)(src/.*\\.(c|cc|cpp|cxx|h|hh|hpp|hxx)|CMakeLists\\.txt)$"
+          VALIDATE_CMAKE: true
+          VALIDATE_CPP: true
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  lint-basics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint Basic Checks
+        uses: github/super-linter@v7
+        env:
+          VALIDATE_ALL_CODEBASE: true
+          DEFAULT_BRANCH: "main"
+          VALIDATE_GITLEAKS: true
+          VALIDATE_GITHUB_ACTIONS: true
+          VALIDATE_YAML: true
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

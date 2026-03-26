@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=XiaoMo
+GenericName=AI Desktop Assistant
+Comment=Cross-platform AI desktop assistant with Live2D
+Exec=XiaoMo
+Icon=xiaomo
+Terminal=false
+Categories=Utility;AudioVideo;
+StartupNotify=true
