@@ -13,3 +13,6 @@
 llm/checkpoints/**/*.safetensors
 llm/checkpoints/**/*.gguf
 res/llm/**/*.gguf
+
+# build files
+llm/llama.cpp/build
