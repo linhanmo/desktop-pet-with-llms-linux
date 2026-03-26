@@ -95,13 +95,19 @@ static QString appLocalDataBaseDir()
 
 static QString voiceDepsRootDir()
 {
-    return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("voice_deps"));
+    const QString appRoot = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("voice_deps"));
+    if (QFileInfo::exists(appRoot) && QFileInfo(appRoot).isDir())
+        return appRoot;
+    const QString bundled = appResourcePath(QStringLiteral("voice_deps"));
+    if (QFileInfo::exists(bundled) && QFileInfo(bundled).isDir())
+        return bundled;
+    return appRoot;
 }
 
 static QString sherpaDefaultBinDir()
 {
     const QString root = voiceDepsRootDir();
-    const QString sherpaRoot = QDir(root).filePath(QStringLiteral("sherpa/sherpa-onnx-v1.9.15-win-x64-shared"));
+    const QString sherpaRoot = QDir(root).filePath(QStringLiteral("sherpa-onnx-v1.12.10-win-x64-shared"));
     const QString sherpaBin = QDir(sherpaRoot).filePath(QStringLiteral("bin"));
     if (QFileInfo::exists(sherpaBin) && QFileInfo(sherpaBin).isDir())
         return sherpaBin;
@@ -111,12 +117,14 @@ static QString sherpaDefaultBinDir()
 static QString sherpaAnyBinDir()
 {
     const QString root = voiceDepsRootDir();
-    const QDir sherpaDir(QDir(root).filePath(QStringLiteral("sherpa")));
-    if (!sherpaDir.exists()) return {};
-    const QStringList subs = sherpaDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    const QDir rootDir(root);
+    if (!rootDir.exists()) return {};
+    const QStringList subs = rootDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
     for (const QString& name : subs)
     {
-        const QString bin = QDir(sherpaDir.filePath(name)).filePath(QStringLiteral("bin"));
+        if (!name.startsWith(QStringLiteral("sherpa-onnx-")))
+            continue;
+        const QString bin = QDir(rootDir.filePath(name)).filePath(QStringLiteral("bin"));
         if (QFileInfo::exists(bin) && QFileInfo(bin).isDir())
             return bin;
     }
@@ -188,7 +196,7 @@ QString SettingsManager::defaultModelsRoot() const
     const QString documentsDir = writableLocationOrFallback(QStandardPaths::DocumentsLocation, QDir::homePath());
     return QDir(documentsDir).filePath(QStringLiteral("XiaoMo/Models"));
 #else
-    return QDir(QDir::homePath()).filePath(".XiaoMo/Models");
+    return QDir(QDir::homePath()).filePath(QStringLiteral(".XiaoMo/Models"));
 #endif
 }
 
@@ -435,27 +443,11 @@ void SettingsManager::setChatBubbleStyle(const QString& styleId)
     save();
 }
 
-bool SettingsManager::offlineSttEnabled() const { return m_offlineSttEnabled; }
-void SettingsManager::setOfflineSttEnabled(bool v)
-{
-    if (m_offlineSttEnabled == v) return;
-    m_offlineSttEnabled = v;
-    save();
-}
-
 bool SettingsManager::offlineTtsEnabled() const { return m_offlineTtsEnabled; }
 void SettingsManager::setOfflineTtsEnabled(bool v)
 {
     if (m_offlineTtsEnabled == v) return;
     m_offlineTtsEnabled = v;
-    save();
-}
-
-bool SettingsManager::wakeWordEnabled() const { return m_wakeWordEnabled; }
-void SettingsManager::setWakeWordEnabled(bool v)
-{
-    if (m_wakeWordEnabled == v) return;
-    m_wakeWordEnabled = v;
     save();
 }
 
@@ -478,37 +470,6 @@ void SettingsManager::setSherpaOnnxBinDir(const QString& dir)
     save();
 }
 
-QString SettingsManager::wakeWordText() const { return m_wakeWordText; }
-void SettingsManager::setWakeWordText(const QString& text)
-{
-    const QString t = text.trimmed();
-    if (m_wakeWordText == t) return;
-    m_wakeWordText = t.isEmpty() ? QStringLiteral("小墨") : t;
-    save();
-}
-
-QString SettingsManager::sherpaKwsModel() const { return m_sherpaKwsModel.trimmed(); }
-void SettingsManager::setSherpaKwsModel(const QString& modelId)
-{
-    const QString v = modelId.trimmed();
-    if (m_sherpaKwsModel == v) return;
-    m_sherpaKwsModel = v;
-    if (!v.isEmpty())
-        m_sherpaKwsArgs.clear();
-    save();
-}
-
-QString SettingsManager::sherpaSttModel() const { return m_sherpaSttModel.trimmed(); }
-void SettingsManager::setSherpaSttModel(const QString& modelId)
-{
-    const QString v = modelId.trimmed();
-    if (m_sherpaSttModel == v) return;
-    m_sherpaSttModel = v;
-    if (!v.isEmpty())
-        m_sherpaSttArgs.clear();
-    save();
-}
-
 QString SettingsManager::sherpaTtsModel() const { return m_sherpaTtsModel.trimmed(); }
 void SettingsManager::setSherpaTtsModel(const QString& modelId)
 {
@@ -520,107 +481,12 @@ void SettingsManager::setSherpaTtsModel(const QString& modelId)
     save();
 }
 
-QString SettingsManager::sherpaKwsArgs() const
-{
-    if (m_sherpaKwsModel.trimmed().isEmpty() && !m_sherpaKwsArgs.trimmed().isEmpty())
-        return m_sherpaKwsArgs;
-
-    const QString kwsBase = QDir(voiceDepsRootDir()).filePath(QStringLiteral("models/kws"));
-    const QString modelId = pickModelId(
-        kwsBase,
-        m_sherpaKwsModel,
-        QStringList{QStringLiteral("sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01")}
-    );
-    if (modelId.isEmpty()) return {};
-    const QDir d(QDir(kwsBase).filePath(modelId));
-
-    QString wake = m_wakeWordText.trimmed();
-    if (wake.isEmpty()) wake = QStringLiteral("小墨");
-    QStringList chars;
-    for (const QChar& c : wake)
-    {
-        if (c.isSpace()) continue;
-        chars << QString(c);
-    }
-    if (chars.isEmpty())
-        chars << QStringLiteral("小") << QStringLiteral("墨");
-
-    const QString keywordsCustom = d.filePath(QStringLiteral("keywords_custom.txt"));
-    if (!QFileInfo::exists(keywordsCustom))
-    {
-        QFile f(keywordsCustom);
-        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        {
-            const QString line = chars.join(QLatin1Char(' ')) + QLatin1Char('\n');
-            f.write(line.toUtf8());
-        }
-    }
-
-    const QString tokens = firstMatchFile(d, {QStringLiteral("tokens.txt")});
-    const QString encoder = firstMatchFile(d, {QStringLiteral("encoder-*.onnx"), QStringLiteral("encoder*.onnx")});
-    const QString decoder = firstMatchFile(d, {QStringLiteral("decoder-*.onnx"), QStringLiteral("decoder*.onnx")});
-    const QString joiner = firstMatchFile(d, {QStringLiteral("joiner-*.onnx"), QStringLiteral("joiner*.onnx")});
-    if (tokens.isEmpty() || encoder.isEmpty() || decoder.isEmpty() || joiner.isEmpty())
-        return {};
-
-    return QStringLiteral("--tokens \"%1\" --encoder \"%2\" --decoder \"%3\" --joiner \"%4\" --keywords-file \"%5\" --model-type zipformer --provider cpu --num-threads 2")
-        .arg(tokens, encoder, decoder, joiner, keywordsCustom);
-}
-void SettingsManager::setSherpaKwsArgs(const QString& args)
-{
-    const QString a = args.trimmed();
-    if (m_sherpaKwsArgs == a) return;
-    m_sherpaKwsArgs = a;
-    save();
-}
-
-QString SettingsManager::sherpaSttArgs() const
-{
-    if (m_sherpaSttModel.trimmed().isEmpty() && !m_sherpaSttArgs.trimmed().isEmpty())
-        return m_sherpaSttArgs;
-
-    const QString asrBase = QDir(voiceDepsRootDir()).filePath(QStringLiteral("models/asr"));
-    const QString modelId = pickModelId(
-        asrBase,
-        m_sherpaSttModel,
-        QStringList{QStringLiteral("sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23")}
-    );
-    if (modelId.isEmpty()) return {};
-    const QDir d(QDir(asrBase).filePath(modelId));
-
-    const QString whisperEncoder = firstMatchFile(d, {QStringLiteral("*-encoder*.onnx"), QStringLiteral("*encoder*.onnx")});
-    const QString whisperDecoder = firstMatchFile(d, {QStringLiteral("*-decoder*.onnx"), QStringLiteral("*decoder*.onnx")});
-    const QString whisperTokens = firstMatchFile(d, {QStringLiteral("tokens.txt"), QStringLiteral("*-tokens.txt")});
-    if (!whisperEncoder.isEmpty() && !whisperDecoder.isEmpty() && !whisperTokens.isEmpty())
-    {
-        return QStringLiteral("--whisper-encoder \"%1\" --whisper-decoder \"%2\" --tokens \"%3\" --model-type whisper --provider cpu --num-threads 2")
-            .arg(whisperEncoder, whisperDecoder, whisperTokens);
-    }
-
-    const QString tokens = firstMatchFile(d, {QStringLiteral("tokens.txt")});
-    const QString encoder = firstMatchFile(d, {QStringLiteral("encoder-*.onnx"), QStringLiteral("encoder*.onnx")});
-    const QString decoder = firstMatchFile(d, {QStringLiteral("decoder-*.onnx"), QStringLiteral("decoder*.onnx")});
-    const QString joiner = firstMatchFile(d, {QStringLiteral("joiner-*.onnx"), QStringLiteral("joiner*.onnx")});
-    if (tokens.isEmpty() || encoder.isEmpty() || decoder.isEmpty() || joiner.isEmpty())
-        return {};
-
-    return QStringLiteral("--tokens \"%1\" --encoder \"%2\" --decoder \"%3\" --joiner \"%4\" --model-type zipformer --provider cpu --num-threads 2 --decoding-method greedy_search")
-        .arg(tokens, encoder, decoder, joiner);
-}
-void SettingsManager::setSherpaSttArgs(const QString& args)
-{
-    const QString a = args.trimmed();
-    if (m_sherpaSttArgs == a) return;
-    m_sherpaSttArgs = a;
-    save();
-}
-
 QString SettingsManager::sherpaTtsArgs() const
 {
     if (m_sherpaTtsModel.trimmed().isEmpty() && !m_sherpaTtsArgs.trimmed().isEmpty())
         return m_sherpaTtsArgs;
 
-    const QString ttsBase = QDir(voiceDepsRootDir()).filePath(QStringLiteral("models/tts"));
+    const QString ttsBase = QDir(voiceDepsRootDir()).filePath(QStringLiteral("models"));
     const QString modelId = pickModelId(ttsBase, m_sherpaTtsModel, {});
     if (modelId.isEmpty()) return {};
     const QDir d(QDir(ttsBase).filePath(modelId));
@@ -630,23 +496,74 @@ QString SettingsManager::sherpaTtsArgs() const
     if (tokens.isEmpty() || model.isEmpty())
         return {};
 
+    const QString voices = firstMatchFile(d, {QStringLiteral("voices.bin")});
+    if (!voices.isEmpty())
+    {
+        QStringList lexicons;
+        const QString lexUs = firstMatchFile(d, {QStringLiteral("lexicon-us-en.txt")});
+        const QString lexGb = firstMatchFile(d, {QStringLiteral("lexicon-gb-en.txt")});
+        const QString lexZh = firstMatchFile(d, {QStringLiteral("lexicon-zh.txt")});
+        const QString lexOne = firstMatchFile(d, {QStringLiteral("lexicon.txt")});
+        if (!lexUs.isEmpty()) lexicons.push_back(lexUs);
+        if (!lexGb.isEmpty()) lexicons.push_back(lexGb);
+        if (!lexZh.isEmpty()) lexicons.push_back(lexZh);
+        if (lexicons.isEmpty() && !lexOne.isEmpty()) lexicons.push_back(lexOne);
+
+        QString args = QStringLiteral("--kokoro-model=\"%1\" --kokoro-voices=\"%2\" --kokoro-tokens=\"%3\"")
+                           .arg(model, voices, tokens);
+
+        const QString espeakDataDir = d.filePath(QStringLiteral("espeak-ng-data"));
+        if (QFileInfo::exists(espeakDataDir) && QFileInfo(espeakDataDir).isDir())
+            args += QStringLiteral(" --kokoro-data-dir=\"%1\"").arg(espeakDataDir);
+
+        const QString dictDir = d.filePath(QStringLiteral("dict"));
+        if (QFileInfo::exists(dictDir) && QFileInfo(dictDir).isDir())
+            args += QStringLiteral(" --kokoro-dict-dir=\"%1\"").arg(dictDir);
+
+        if (!lexicons.isEmpty())
+            args += QStringLiteral(" --kokoro-lexicon=\"%1\"").arg(lexicons.join(QStringLiteral(",")));
+
+        args += QStringLiteral(" --provider=cpu --num-threads=2 {text}");
+        return args;
+    }
+
     const QString espeakDataDir = d.filePath(QStringLiteral("espeak-ng-data"));
     if (QFileInfo::exists(espeakDataDir) && QFileInfo(espeakDataDir).isDir())
     {
-        return QStringLiteral("--vits-model \"%1\" --vits-tokens \"%2\" --vits-data-dir \"%3\" --sid 0 --provider cpu --num-threads 2 {text}")
-            .arg(model, tokens, espeakDataDir);
+        const int sid = m_sherpaTtsSid < 0 ? 0 : m_sherpaTtsSid;
+        return QStringLiteral("--vits-model=\"%1\" --vits-tokens=\"%2\" --vits-data-dir=\"%3\" --sid=%4 --provider=cpu --num-threads=2 {text}")
+            .arg(model, tokens, espeakDataDir, QString::number(sid));
     }
 
     const QString lexicon = d.filePath(QStringLiteral("lexicon.txt"));
+    const QString dictDir = d.filePath(QStringLiteral("dict"));
+    const bool hasDict = QFileInfo::exists(dictDir) && QFileInfo(dictDir).isDir();
+    const int sid = m_sherpaTtsSid < 0 ? 0 : m_sherpaTtsSid;
     return QFileInfo::exists(lexicon)
-               ? QStringLiteral("--vits-model \"%1\" --vits-tokens \"%2\" --vits-lexicon \"%3\" --sid 0 --provider cpu --num-threads 2 {text}").arg(model, tokens, lexicon)
-               : QStringLiteral("--vits-model \"%1\" --vits-tokens \"%2\" --sid 0 --provider cpu --num-threads 2 {text}").arg(model, tokens);
+               ? (hasDict
+                      ? QStringLiteral("--vits-model=\"%1\" --vits-tokens=\"%2\" --vits-lexicon=\"%3\" --vits-dict-dir=\"%4\" --sid=%5 --provider=cpu --num-threads=2 {text}").arg(model, tokens, lexicon, dictDir, QString::number(sid))
+                      : QStringLiteral("--vits-model=\"%1\" --vits-tokens=\"%2\" --vits-lexicon=\"%3\" --sid=%4 --provider=cpu --num-threads=2 {text}").arg(model, tokens, lexicon, QString::number(sid)))
+               : (hasDict
+                      ? QStringLiteral("--vits-model=\"%1\" --vits-tokens=\"%2\" --vits-dict-dir=\"%3\" --sid=%4 --provider=cpu --num-threads=2 {text}").arg(model, tokens, dictDir, QString::number(sid))
+                      : QStringLiteral("--vits-model=\"%1\" --vits-tokens=\"%2\" --sid=%3 --provider=cpu --num-threads=2 {text}").arg(model, tokens, QString::number(sid)));
 }
 void SettingsManager::setSherpaTtsArgs(const QString& args)
 {
     const QString a = args.trimmed();
     if (m_sherpaTtsArgs == a) return;
     m_sherpaTtsArgs = a;
+    save();
+}
+
+int SettingsManager::sherpaTtsSid() const
+{
+    return m_sherpaTtsSid < 0 ? 0 : m_sherpaTtsSid;
+}
+void SettingsManager::setSherpaTtsSid(int sid)
+{
+    if (sid < 0) sid = 0;
+    if (m_sherpaTtsSid == sid) return;
+    m_sherpaTtsSid = sid;
     save();
 }
 
@@ -742,18 +659,11 @@ void SettingsManager::load()
     m_llmModelSize = root.value("llmModelSize").toString(QStringLiteral("1.5B"));
     m_chatBubbleStyle = root.value("chatBubbleStyle").toString(QStringLiteral("Era"));
 
-    m_offlineSttEnabled = root.value("offlineSttEnabled").toBool(false);
     m_offlineTtsEnabled = root.value("offlineTtsEnabled").toBool(false);
-    m_wakeWordEnabled = root.value("wakeWordEnabled").toBool(false);
     m_sherpaOnnxBinDir = root.value("sherpaOnnxBinDir").toString().trimmed();
-    m_wakeWordText = root.value("wakeWordText").toString(QStringLiteral("小墨")).trimmed();
-    if (m_wakeWordText.isEmpty()) m_wakeWordText = QStringLiteral("小墨");
-    m_sherpaKwsModel = root.value("sherpaKwsModel").toString().trimmed();
-    m_sherpaSttModel = root.value("sherpaSttModel").toString().trimmed();
     m_sherpaTtsModel = root.value("sherpaTtsModel").toString().trimmed();
-    m_sherpaKwsArgs = root.value("sherpaKwsArgs").toString();
-    m_sherpaSttArgs = root.value("sherpaSttArgs").toString();
     m_sherpaTtsArgs = root.value("sherpaTtsArgs").toString();
+    m_sherpaTtsSid = root.value("sherpaTtsSid").toInt(0);
     m_ttsVolumePercent = root.value("ttsVolumePercent").toInt(80);
 
     // TTS
@@ -799,17 +709,11 @@ void SettingsManager::save() const
     root["llmModelSize"] = llmModelSize();
     root["chatBubbleStyle"] = chatBubbleStyle();
 
-    root["offlineSttEnabled"] = m_offlineSttEnabled;
     root["offlineTtsEnabled"] = m_offlineTtsEnabled;
-    root["wakeWordEnabled"] = m_wakeWordEnabled;
     root["sherpaOnnxBinDir"] = m_sherpaOnnxBinDir;
-    root["wakeWordText"] = m_wakeWordText;
-    root["sherpaKwsModel"] = m_sherpaKwsModel.trimmed();
-    root["sherpaSttModel"] = m_sherpaSttModel.trimmed();
     root["sherpaTtsModel"] = m_sherpaTtsModel.trimmed();
-    root["sherpaKwsArgs"] = m_sherpaKwsArgs;
-    root["sherpaSttArgs"] = m_sherpaSttArgs;
     root["sherpaTtsArgs"] = m_sherpaTtsArgs;
+    root["sherpaTtsSid"] = sherpaTtsSid();
     root["ttsVolumePercent"] = ttsVolumePercent();
 
     // TTS
@@ -849,7 +753,16 @@ void SettingsManager::bootstrap(const QString& appDir)
     }
 
     QDir models(modelsRoot());
-    if (!models.exists()) models.mkpath(".");
+    if (!models.exists()) {
+        if (!models.mkpath(".")) {
+            // fallback to bundled models if we can't create the directory
+            if (hasBundledModels) {
+                m_modelsRoot = bundledModels;
+                models = QDir(modelsRoot());
+                changed = true;
+            }
+        }
+    }
 
     // Chats dir
     {
@@ -905,7 +818,7 @@ void SettingsManager::bootstrap(const QString& appDir)
         ensureModelConfigExists(m_selectedFolder);
     }
 
-    const QString voiceDepsRoot = QDir(appDir).filePath(QStringLiteral("voice_deps"));
+    const QString voiceDepsRoot = voiceDepsRootDir();
     if (QFileInfo::exists(voiceDepsRoot) && QFileInfo(voiceDepsRoot).isDir())
     {
         if (!m_sherpaOnnxBinDir.trimmed().isEmpty() && (!QFileInfo::exists(m_sherpaOnnxBinDir) || !QFileInfo(m_sherpaOnnxBinDir).isDir()))
@@ -914,23 +827,7 @@ void SettingsManager::bootstrap(const QString& appDir)
             changed = true;
         }
 
-        const QString kwsBase = QDir(voiceDepsRoot).filePath(QStringLiteral("models/kws"));
-        const QString sttBase = QDir(voiceDepsRoot).filePath(QStringLiteral("models/asr"));
-        const QString ttsBase = QDir(voiceDepsRoot).filePath(QStringLiteral("models/tts"));
-
-        const QString kwsPicked = pickModelId(kwsBase, m_sherpaKwsModel, QStringList{QStringLiteral("sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01")});
-        if (m_sherpaKwsModel.trimmed().isEmpty() && !kwsPicked.isEmpty())
-        {
-            m_sherpaKwsModel = kwsPicked;
-            changed = true;
-        }
-
-        const QString sttPicked = pickModelId(sttBase, m_sherpaSttModel, QStringList{QStringLiteral("sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23")});
-        if (m_sherpaSttModel.trimmed().isEmpty() && !sttPicked.isEmpty())
-        {
-            m_sherpaSttModel = sttPicked;
-            changed = true;
-        }
+        const QString ttsBase = QDir(voiceDepsRoot).filePath(QStringLiteral("models"));
 
         const QString ttsPicked = pickModelId(ttsBase, m_sherpaTtsModel, {});
         if (m_sherpaTtsModel.trimmed().isEmpty() && !ttsPicked.isEmpty())

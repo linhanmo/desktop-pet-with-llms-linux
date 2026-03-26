@@ -79,19 +79,6 @@ QString sanitizeLlamaCliOutput(QString text, const QString& promptEcho)
     if (promptStatsPos >= 0)
         text = text.left(promptStatsPos);
 
-    {
-        static const QRegularExpression assistantMarker(
-            QStringLiteral(R"((?:^|\n)\s*Assistant\s*:\s*)"),
-            QRegularExpression::CaseInsensitiveOption);
-
-        QRegularExpressionMatchIterator it = assistantMarker.globalMatch(text);
-        int lastEnd = -1;
-        while (it.hasNext())
-            lastEnd = it.next().capturedEnd();
-        if (lastEnd >= 0 && lastEnd <= text.size())
-            text = text.mid(lastEnd);
-    }
-
     QStringList outLines;
     const QStringList lines = text.split('\n');
     outLines.reserve(lines.size());
@@ -125,6 +112,20 @@ QString sanitizeLlamaCliOutput(QString text, const QString& promptEcho)
 
         if (t.isEmpty() && skippingHeader)
             continue;
+
+        const auto stripRolePrefix = [](const QString& in)->QString {
+            const QString s = in.trimmed();
+            const QString lower = s.toLower();
+            auto cutAfter = [&](const QString& prefix)->QString {
+                QString out = s.mid(prefix.size()).trimmed();
+                return out;
+            };
+            if (lower.startsWith(QStringLiteral("assistant:")))
+                return cutAfter(QStringLiteral("assistant:"));
+            if (lower.startsWith(QStringLiteral("assistant :")))
+                return cutAfter(QStringLiteral("assistant :"));
+            return in;
+        };
 
         if (t.compare(QStringLiteral("Exiting..."), Qt::CaseInsensitive) == 0
             || t.compare(QStringLiteral("Exiting.."), Qt::CaseInsensitive) == 0
@@ -186,8 +187,7 @@ QString sanitizeLlamaCliOutput(QString text, const QString& promptEcho)
         }
 
         if (t.startsWith(QStringLiteral("System:"), Qt::CaseInsensitive)
-            || t.startsWith(QStringLiteral("User:"), Qt::CaseInsensitive)
-            || t == QStringLiteral("Assistant:"))
+            || t.startsWith(QStringLiteral("User:"), Qt::CaseInsensitive))
         {
             continue;
         }
@@ -195,7 +195,15 @@ QString sanitizeLlamaCliOutput(QString text, const QString& promptEcho)
         if (t == QStringLiteral(">") || t == QStringLiteral("> "))
             continue;
 
-        outLines.push_back(line);
+        const QString stripped = stripRolePrefix(line);
+        const QString strippedTrimmed = stripped.trimmed();
+        if (strippedTrimmed == QStringLiteral("Assistant:") || strippedTrimmed.isEmpty())
+        {
+            skippingHeader = false;
+            continue;
+        }
+
+        outLines.push_back(stripped);
         skippingHeader = false;
     }
 
@@ -333,6 +341,7 @@ void LocalLlmClient::generate(const QString& prompt, int maxTokens)
     args << QStringLiteral("--conversation");
     args << QStringLiteral("--single-turn");
     args << QStringLiteral("--simple-io");
+    args << QStringLiteral("--no-display-prompt");
     args << QStringLiteral("--no-show-timings");
     args << QStringLiteral("--log-disable");
     if (!systemFile.isEmpty())
@@ -530,6 +539,7 @@ QString LocalLlmClient::generateSync(const QString& prompt, int maxTokens) const
     args << QStringLiteral("--conversation");
     args << QStringLiteral("--single-turn");
     args << QStringLiteral("--simple-io");
+    args << QStringLiteral("--no-display-prompt");
     args << QStringLiteral("--no-show-timings");
     args << QStringLiteral("--log-disable");
     if (!systemFile.isEmpty())

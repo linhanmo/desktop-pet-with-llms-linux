@@ -49,6 +49,13 @@
 #include <QMutex>
 #include <cstdlib>
 #include <cmath>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+#include <QPermissions>
+#endif
+
+#if defined(Q_OS_WIN32)
+#include <windows.h>
+#endif
 
 namespace {
 QString startupLogFilePath()
@@ -894,10 +901,6 @@ int main(int argc, char *argv[]) {
     QApplication::setQuitOnLastWindowClosed(false);
 
     installStartupLogger();
-    qInfo() << "XiaoMo start"
-            << "appDir=" << QCoreApplication::applicationDirPath()
-            << "resRoot=" << appResourceRootPath()
-            << "modelsRoot=" << SettingsManager::instance().modelsRoot();
 
     try {
         SettingsManager::instance().load();
@@ -911,6 +914,11 @@ int main(int argc, char *argv[]) {
         std::_Exit(1);
     }
 
+    qInfo() << "XiaoMo start"
+            << "appDir=" << QCoreApplication::applicationDirPath()
+            << "resRoot=" << appResourceRootPath()
+            << "modelsRoot=" << SettingsManager::instance().modelsRoot();
+
     const QIcon appIcon(appResourcePath(QStringLiteral("icons/app-icon.png")));
     if (!appIcon.isNull()) {
         app.setWindowIcon(appIcon);
@@ -918,6 +926,33 @@ int main(int argc, char *argv[]) {
 
     QTranslator appTranslator;
     loadAppTranslator(app, appTranslator, SettingsManager::instance().currentLanguage());
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0) && !defined(Q_OS_WIN)
+    QMicrophonePermission micPerm;
+    switch (qApp->checkPermission(micPerm)) {
+    case Qt::PermissionStatus::Undetermined:
+        qApp->requestPermission(micPerm, [](const QPermission& permission) {
+            if (permission.status() != Qt::PermissionStatus::Granted) {
+                qWarning() << "Microphone permission denied via Qt API.";
+            } else {
+                qInfo() << "Microphone permission granted via Qt API.";
+            }
+        });
+        break;
+    case Qt::PermissionStatus::Denied:
+        qWarning() << "Microphone permission is already denied via Qt API.";
+        break;
+    case Qt::PermissionStatus::Granted:
+        qInfo() << "Microphone permission is already granted via Qt API.";
+        break;
+    }
+#endif
+
+#if defined(Q_OS_WIN32)
+    // NOTE: WinRT MediaCapture API caused hard crashes (QThreadStorage destroyed before end of thread).
+    // The underlying Qt audio subsystem and WinRT COM threading model have severe conflicts.
+    // We rely solely on Qt's permission request or user's manual authorization.
+#endif
 
     QMainWindow win;
     win.setWindowFlag(Qt::FramelessWindowHint, true);
@@ -1041,6 +1076,7 @@ int main(int argc, char *argv[]) {
         toggleAction->setText(win.isVisible() ? QObject::tr("隐藏") : QObject::tr("显示"));
     };
 
+    // ... Tray Icon Creation ...
     createTray();
 
     // Settings window (default hidden)
@@ -1055,9 +1091,13 @@ int main(int argc, char *argv[]) {
     chatCtl->applyPreferredAudioOutput();
 
     auto voiceSvc = new OfflineVoiceService(&app);
-    voiceSvc->reloadFromSettings();
-    QObject::connect(settingsWnd, &SettingsWindow::offlineVoiceSettingsChanged, voiceSvc, [voiceSvc]{
+    // Move voice service setup logic after the main window is fully initialized.
+    // We defer the start to avoid audio initialization during UI rendering which might crash
+    QTimer::singleShot(1000, voiceSvc, [voiceSvc, settingsWnd]() {
         voiceSvc->reloadFromSettings();
+        QObject::connect(settingsWnd, &SettingsWindow::offlineVoiceSettingsChanged, voiceSvc, [voiceSvc]{
+            voiceSvc->reloadFromSettings();
+        });
     });
 
     auto bubbleWnd = new PetSpeechBubbleWidget(nullptr);
@@ -1117,36 +1157,6 @@ int main(int argc, char *argv[]) {
         else bubbleHideTimer->stop();
     });
 
-    bool voiceAwaitingAssistant = false;
-    QObject::connect(voiceSvc, &OfflineVoiceService::wakeWordDetected, &app, [bubbleWnd, bubbleHideTimer, placeBubble]{
-        bubbleHideTimer->stop();
-        bubbleWnd->setBubbleStyle(SettingsManager::instance().chatBubbleStyle());
-        bubbleWnd->setBubbleText(QObject::tr("嗯？"));
-        bubbleWnd->show();
-        placeBubble();
-        bubbleHideTimer->start(1200);
-    });
-    QObject::connect(voiceSvc, &OfflineVoiceService::sttPartialText, &app, [bubbleWnd, bubbleHideTimer, placeBubble](const QString& text){
-        const QString t = text.trimmed();
-        if (t.isEmpty()) return;
-        bubbleHideTimer->stop();
-        bubbleWnd->setBubbleStyle(SettingsManager::instance().chatBubbleStyle());
-        bubbleWnd->setBubbleText(QObject::tr("…%1").arg(t));
-        bubbleWnd->show();
-        placeBubble();
-    });
-    QObject::connect(voiceSvc, &OfflineVoiceService::sttFinalText, &app, [chatCtl, bubbleHideTimer, bubbleWnd, placeBubble, &voiceAwaitingAssistant](const QString& text){
-        const QString t = text.trimmed();
-        if (t.isEmpty()) return;
-        voiceAwaitingAssistant = true;
-        bubbleHideTimer->stop();
-        bubbleWnd->setBubbleStyle(SettingsManager::instance().chatBubbleStyle());
-        bubbleWnd->setBubbleText(QObject::tr("你：%1").arg(t));
-        bubbleWnd->show();
-        placeBubble();
-        chatCtl->triggerLocalPrompt(t, QString(), QString());
-    });
-
     QObject::connect(renderer, &Renderer::requestChangeBubbleStyle, &app, [bubbleWnd](const QString& styleId){
         SettingsManager::instance().setChatBubbleStyle(styleId);
         if (bubbleWnd) {
@@ -1154,10 +1164,8 @@ int main(int argc, char *argv[]) {
             if (bubbleWnd->isVisible()) bubbleWnd->update();
         }
     });
-    QObject::connect(chatCtl, &ChatController::assistantBubbleTextChanged, &app, [voiceSvc, &voiceAwaitingAssistant](const QString& text, bool isFinal){
+    QObject::connect(chatCtl, &ChatController::assistantBubbleTextChanged, &app, [voiceSvc](const QString& text, bool isFinal){
         if (!isFinal) return;
-        if (!voiceAwaitingAssistant) return;
-        voiceAwaitingAssistant = false;
         voiceSvc->speakText(text);
     });
 
@@ -1566,7 +1574,19 @@ int main(int argc, char *argv[]) {
         });
     }
 
-    const int exitCode = app.exec();
-    Q_UNUSED(appPtr);
-    std::_Exit(exitCode);
+    app.setQuitOnLastWindowClosed(false);
+    
+    // Set up crash handler to see if we're hitting an exception
+    try {
+        const int exitCode = app.exec();
+        qDebug() << "[DEBUG] app.exec() finished with code:" << exitCode;
+        Q_UNUSED(appPtr);
+        return exitCode;
+    } catch (const std::exception& e) {
+        qDebug() << "[FATAL] Unhandled exception in main loop:" << e.what();
+        return 1;
+    } catch (...) {
+        qDebug() << "[FATAL] Unknown unhandled exception in main loop.";
+        return 1;
+    }
 }

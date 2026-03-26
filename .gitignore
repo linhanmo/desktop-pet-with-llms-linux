@@ -2,17 +2,31 @@
 /.idea/
 /.venv/
 *.iml
-/sdk/cubism/
+/build-msvc/
 /build/
 /cmake-build-debug/
 /cmake-build-release/
-/res/models/*/
 .DS_Store
+README.md
 
+# Keep empty directories in git; store large assets in Releases
+/sdk/cubism/**
+!/sdk/cubism/.gitkeep
+
+/res/llm/**
+!/res/llm/.gitkeep
+
+/res/models/**
+!/res/models/.gitkeep
+/res/models/live2d_asset_db.json
+
+/res/voice_deps/**
+!/res/voice_deps/.gitkeep
 # Large model files
 llm/checkpoints/**/*.safetensors
 llm/checkpoints/**/*.gguf
 res/llm/**/*.gguf
+
 
 # build files
 llm/llama.cpp/build

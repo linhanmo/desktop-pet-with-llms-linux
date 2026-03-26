@@ -6,7 +6,6 @@
 #include <QTimer>
 #include <QDir>
 #include <QFileInfo>
-#include <QRegularExpression>
 #include <QProcessEnvironment>
 #include <QMessageBox>
 #include <QDesktopServices>
@@ -27,105 +26,7 @@
 #include <audiopolicy.h>
 #include <endpointvolume.h>
 #endif
-
-static QString normalizeCandidateText(QString s)
-{
-    s = s.trimmed();
-    if (s.isEmpty()) return {};
-
-    static const QRegularExpression re(QStringLiteral(
-        R"(^\s*(?:result|text|final|partial)\s*[:：]\s*(.+?)\s*$)"
-    ), QRegularExpression::CaseInsensitiveOption);
-    auto m = re.match(s);
-    if (m.hasMatch())
-        s = m.captured(1).trimmed();
-
-    if (s.startsWith('"') && s.endsWith('"') && s.size() >= 2)
-        s = s.mid(1, s.size() - 2).trimmed();
-
-    return s;
-}
-
-OfflineVoiceService::OfflineVoiceService(QObject* parent)
-    : QObject(parent)
-{
-    m_sttIdleTimer = new QTimer(this);
-    m_sttIdleTimer->setSingleShot(true);
-    connect(m_sttIdleTimer, &QTimer::timeout, this, [this]{
-        finalizeStt();
-    });
-}
-
-OfflineVoiceService::SettingsSnapshot OfflineVoiceService::readSettings() const
-{
-    SettingsSnapshot s;
-    auto& sm = SettingsManager::instance();
-    s.sttEnabled = sm.offlineSttEnabled();
-    s.ttsEnabled = sm.offlineTtsEnabled();
-    s.wakeEnabled = sm.wakeWordEnabled();
-    s.binDir = sm.sherpaOnnxBinDir();
-    s.wakeWord = sm.wakeWordText();
-    s.kwsArgs = sm.sherpaKwsArgs();
-    s.sttArgs = sm.sherpaSttArgs();
-    s.ttsArgs = sm.sherpaTtsArgs();
-    s.ttsVolumePercent = sm.ttsVolumePercent();
-    return s;
-}
-
-void OfflineVoiceService::applySettingsSnapshot(const SettingsSnapshot& next)
-{
-    const bool changedBin = (m_settings.binDir != next.binDir);
-    const bool changedWake = (m_settings.wakeEnabled != next.wakeEnabled) || (m_settings.wakeWord != next.wakeWord) || (m_settings.kwsArgs != next.kwsArgs);
-    const bool changedStt = (m_settings.sttEnabled != next.sttEnabled) || (m_settings.sttArgs != next.sttArgs);
-    const bool changedTts = (m_settings.ttsEnabled != next.ttsEnabled) || (m_settings.ttsArgs != next.ttsArgs);
-
-    m_settings = next;
-
-    if (changedBin || changedWake || changedStt)
-    {
-        if (m_stt)
-            stopStt();
-        if (m_kws)
-            stopKws();
-    }
-    if (changedBin || changedTts)
-        stopTts();
-}
-
-void OfflineVoiceService::reloadFromSettings()
-{
-    applySettingsSnapshot(readSettings());
-    start();
-}
-
-static bool g_micHintShown = false;
 static bool g_speakerHintShown = false;
-
-static void showMicHint(const QString& detail)
-{
-    if (g_micHintShown) return;
-    g_micHintShown = true;
-#if defined(Q_OS_MACOS)
-    QString tip = QObject::tr("无法使用麦克风。\n\n请在“系统设置→隐私与安全性→麦克风”中授权应用访问麦克风，并确保设备连接正常。");
-#elif defined(Q_OS_WIN32)
-    QString tip = QObject::tr("无法使用麦克风。\n\n请在“设置→隐私→麦克风”中开启“麦克风访问”，并开启“允许桌面应用访问你的麦克风”。\nWindows 对传统桌面程序通常没有“按应用单独授权”的开关。");
-#else
-    QString tip = QObject::tr("无法使用麦克风。\n\n请检查桌面环境的音频输入设备设置（PulseAudio/PipeWire），并确保设备可用。");
-#endif
-    const QString d = detail.trimmed();
-    if (!d.isEmpty())
-        tip += QStringLiteral("\n\n") + d.left(800);
-#if defined(Q_OS_WIN32)
-    QMessageBox box(QMessageBox::Warning, QObject::tr("麦克风不可用"), tip, QMessageBox::NoButton, nullptr);
-    QAbstractButton* openBtn = box.addButton(QObject::tr("打开设置"), QMessageBox::AcceptRole);
-    box.addButton(QObject::tr("关闭"), QMessageBox::RejectRole);
-    box.exec();
-    if (box.clickedButton() == openBtn)
-        QDesktopServices::openUrl(QUrl(QStringLiteral("ms-settings:privacy-microphone")));
-#else
-    QMessageBox::warning(nullptr, QObject::tr("麦克风不可用"), tip);
-#endif
-}
 
 static void showSpeakerHint(const QString& detail)
 {
@@ -140,18 +41,667 @@ static void showSpeakerHint(const QString& detail)
 #endif
     const QString d = detail.trimmed();
     if (!d.isEmpty())
-        tip += QStringLiteral("\n\n") + d.left(800);
-#if defined(Q_OS_WIN32)
+        tip += QStringLiteral("\n\n") + (d.size() > 1200 ? d.right(1200) : d);
+
     QMessageBox box(QMessageBox::Warning, QObject::tr("音频输出不可用"), tip, QMessageBox::NoButton, nullptr);
+    box.setWindowModality(Qt::ApplicationModal);
+    box.setWindowFlag(Qt::WindowStaysOnTopHint, true);
+#if defined(Q_OS_WIN32)
     QAbstractButton* openBtn = box.addButton(QObject::tr("打开设置"), QMessageBox::AcceptRole);
     box.addButton(QObject::tr("关闭"), QMessageBox::RejectRole);
     box.exec();
     if (box.clickedButton() == openBtn)
         QDesktopServices::openUrl(QUrl(QStringLiteral("ms-settings:sound")));
 #else
-    QMessageBox::warning(nullptr, QObject::tr("音频输出不可用"), tip);
+    box.addButton(QObject::tr("关闭"), QMessageBox::RejectRole);
+    box.exec();
 #endif
 }
+
+static void applySherpaEnv(QProcess* p, const QString& binDir);
+
+#if 0
+struct OfflineVoiceService::Engine {
+    explicit Engine(
+        QObject* parent,
+        std::function<void()> onWake,
+        std::function<void(const QString&)> onSttPartial,
+        std::function<void(const QString&)> onMicError
+    )
+        : parent(parent)
+        , onWake(std::move(onWake))
+        , onSttPartial(std::move(onSttPartial))
+        , onMicError(std::move(onMicError))
+    {
+#if defined(AMAIGIRL_USE_QT_MULTIMEDIA)
+        decodeTimer = new QTimer(parent);
+        decodeTimer->setInterval(30);
+        decodeTimer->setTimerType(Qt::PreciseTimer);
+        QObject::connect(decodeTimer, &QTimer::timeout, parent, [this] { process(); });
+#endif
+    }
+
+    ~Engine() {
+        stopMicIfIdle();
+#if defined(AMAIGIRL_USE_QT_MULTIMEDIA)
+        if (decodeTimer) {
+            decodeTimer->stop();
+            delete decodeTimer;
+            decodeTimer = nullptr;
+        }
+#endif
+    }
+
+    void applySettings(const SettingsSnapshot& s)
+    {
+        settings = s;
+    }
+
+    void startKws()
+    {
+        qDebug() << "[DEBUG] Engine::startKws() start";
+        stopAll();
+        if (!settings.wakeEnabled) {
+            qDebug() << "[DEBUG] Engine::startKws() wakeEnabled is false, returning";
+            return;
+        }
+
+#if defined(Q_OS_WIN32)
+        qDebug() << "[DEBUG] Engine::startKws() parsing args";
+        const auto args = parseArgs(settings.kwsArgs, true);
+        if (!args) {
+            qDebug() << "[DEBUG] Engine::startKws() parseArgs failed or missing files";
+            return;
+        }
+
+        qDebug() << "[DEBUG] Engine::startKws() creating config";
+        QByteArray modelType = args->modelType.toUtf8();
+        QByteArray tokens = args->tokens.toUtf8();
+        QByteArray encoder = args->encoder.toUtf8();
+        QByteArray decoder = args->decoder.toUtf8();
+        QByteArray joiner = args->joiner.toUtf8();
+        QByteArray provider = args->provider.toUtf8();
+        QByteArray keywordsFile = args->keywordsFile.toUtf8();
+
+        SherpaOnnxKeywordSpotterConfig config;
+        memset(&config, 0, sizeof(config));
+        config.feat_config.sample_rate = 16000;
+        config.feat_config.feature_dim = 80;
+        config.model_config.model_type = modelType.constData();
+        config.model_config.tokens = tokens.constData();
+        config.model_config.provider = provider.constData();
+        config.model_config.num_threads = args->numThreads;
+        config.model_config.debug = 0;
+        
+        config.model_config.transducer.encoder = encoder.constData();
+        config.model_config.transducer.decoder = decoder.constData();
+        config.model_config.transducer.joiner = joiner.constData();
+        
+        config.max_active_paths = 4;
+        config.num_trailing_blanks = 1;
+        config.keywords_score = 1.0f;
+        config.keywords_threshold = 0.25f;
+        config.keywords_file = keywordsFile.constData();
+        config.keywords_buf_size = 0;
+
+        qDebug() << "[DEBUG] Engine::startKws() KeywordSpotter::Create...";
+        const SherpaOnnxKeywordSpotter* p = SherpaOnnxCreateKeywordSpotter(&config);
+        if (!p) {
+            qDebug() << "[DEBUG] Engine::startKws() failed to create KeywordSpotter";
+            return;
+        }
+        kws.reset(p);
+
+        qDebug() << "[DEBUG] Engine::startKws() CreateStream...";
+        const SherpaOnnxOnlineStream* s = SherpaOnnxCreateKeywordStream(kws.get());
+        if (!s) {
+            qDebug() << "[DEBUG] Engine::startKws() failed to create stream";
+            return;
+        }
+        kwsStream.reset(s);
+        mode = Mode::Wake;
+        
+        qDebug() << "[DEBUG] Engine::startKws() startMicIfNeeded...";
+        startMicIfNeeded();
+        qDebug() << "[DEBUG] Engine::startKws() done";
+#else
+        if (kwsProc)
+            return;
+        const QString program = exePath(QStringLiteral("sherpa-onnx-keyword-spotter-microphone"));
+        if (program.isEmpty() || !QFileInfo::exists(program))
+            return;
+
+        kwsProc = new QProcess(parent);
+        kwsProc->setProgram(program);
+        kwsProc->setArguments(QProcess::splitCommand(settings.kwsArgs));
+        applySherpaEnv(kwsProc, settings.binDir);
+        kwsProc->setProcessChannelMode(QProcess::MergedChannels);
+        QObject::connect(kwsProc, &QProcess::readyReadStandardOutput, parent, [this]{
+            if (!kwsProc) return;
+            const QString wake = settings.wakeWord.trimmed();
+            const QString wakeCompact = QString(wake).remove(QRegularExpression(QStringLiteral("\\s+")));
+            const QByteArray data = kwsProc->readAllStandardOutput();
+            const QString out = QString::fromLocal8Bit(data);
+            const QStringList lines = out.split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts);
+            for (QString line : lines)
+            {
+                line = line.trimmed();
+                if (line.isEmpty()) continue;
+                const QString lineCompact = QString(line).remove(QRegularExpression(QStringLiteral("\\s+")));
+                if (!wakeCompact.isEmpty() && (line.contains(wake, Qt::CaseInsensitive) || lineCompact.contains(wakeCompact, Qt::CaseInsensitive)))
+                {
+                    onWake();
+                    break;
+                }
+            }
+        });
+        QObject::connect(kwsProc, &QProcess::errorOccurred, parent, [this](QProcess::ProcessError){
+            if (!kwsProc) return;
+            const QString out = QString::fromLocal8Bit(kwsProc->readAll());
+            onMicError(out);
+        });
+        QObject::connect(kwsProc, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), parent, [this](int exitCode, QProcess::ExitStatus){
+            if (!kwsProc) return;
+            const QString out = QString::fromLocal8Bit(kwsProc->readAll());
+            if (exitCode != 0)
+                onMicError(out);
+            kwsProc->deleteLater();
+            kwsProc = nullptr;
+        });
+        kwsProc->start();
+        mode = Mode::Wake;
+#endif
+    }
+
+    void stopKws()
+    {
+        qDebug() << "[DEBUG] Engine::stopKws() called, mode =" << (int)mode;
+        if (mode == Mode::Wake)
+            stopAll();
+    }
+
+    void startStt()
+    {
+        stopAll();
+        if (!settings.sttEnabled)
+            return;
+
+#if defined(Q_OS_WIN32)
+        const auto args = parseArgs(settings.sttArgs, false);
+        if (!args)
+            return;
+
+        QByteArray modelType = args->modelType.toUtf8();
+        QByteArray tokens = args->tokens.toUtf8();
+        QByteArray encoder = args->encoder.toUtf8();
+        QByteArray decoder = args->decoder.toUtf8();
+        QByteArray joiner = args->joiner.toUtf8();
+        QByteArray provider = args->provider.toUtf8();
+        QByteArray decodingMethod = args->decodingMethod.toUtf8();
+
+        SherpaOnnxOnlineRecognizerConfig config;
+        memset(&config, 0, sizeof(config));
+        config.feat_config.sample_rate = 16000;
+        config.feat_config.feature_dim = 80;
+        config.model_config.model_type = modelType.constData();
+        config.model_config.tokens = tokens.constData();
+        config.model_config.provider = provider.constData();
+        config.model_config.num_threads = args->numThreads;
+        config.model_config.debug = 0;
+        
+        config.model_config.transducer.encoder = encoder.constData();
+        config.model_config.transducer.decoder = decoder.constData();
+        config.model_config.transducer.joiner = joiner.constData();
+
+        config.decoding_method = decodingMethod.constData();
+        config.max_active_paths = 4;
+        config.enable_endpoint = 1;
+        config.rule1_min_trailing_silence = 2.4f;
+        config.rule2_min_trailing_silence = 1.2f;
+        config.rule3_min_utterance_length = 20.0f;
+        config.hotwords_buf_size = 0;
+        config.hotwords_score = 0.0f;
+        config.blank_penalty = 0.0f;
+
+        const SherpaOnnxOnlineRecognizer* p = SherpaOnnxCreateOnlineRecognizer(&config);
+        if (!p) return;
+        stt.reset(p);
+
+        const SherpaOnnxOnlineStream* s = SherpaOnnxCreateOnlineStream(stt.get());
+        if (!s) return;
+        sttStream.reset(s);
+        
+        mode = Mode::Stt;
+        startMicIfNeeded();
+#else
+        if (sttProc)
+            return;
+        const QString program = exePath(QStringLiteral("sherpa-onnx-microphone"));
+        if (program.isEmpty() || !QFileInfo::exists(program))
+            return;
+
+        sttProc = new QProcess(parent);
+        sttProc->setProgram(program);
+        sttProc->setArguments(QProcess::splitCommand(settings.sttArgs));
+        applySherpaEnv(sttProc, settings.binDir);
+        sttProc->setProcessChannelMode(QProcess::MergedChannels);
+        QObject::connect(sttProc, &QProcess::readyReadStandardOutput, parent, [this]{
+            if (!sttProc) return;
+            const QByteArray data = sttProc->readAllStandardOutput();
+            const QString out = QString::fromLocal8Bit(data);
+            const QStringList lines = out.split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts);
+            for (QString line : lines)
+            {
+                line = normalizeCandidateText(line);
+                if (!line.isEmpty())
+                    onSttPartial(line);
+            }
+        });
+        QObject::connect(sttProc, &QProcess::errorOccurred, parent, [this](QProcess::ProcessError){
+            if (!sttProc) return;
+            const QString out = QString::fromLocal8Bit(sttProc->readAll());
+            onMicError(sttProc->errorString() + QStringLiteral("\n") + out);
+        });
+        QObject::connect(sttProc, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), parent, [this](int exitCode, QProcess::ExitStatus){
+            if (!sttProc) return;
+            const QString out = QString::fromLocal8Bit(sttProc->readAll());
+            if (exitCode != 0)
+                onMicError(out);
+            sttProc->deleteLater();
+            sttProc = nullptr;
+        });
+        sttProc->start();
+        mode = Mode::Stt;
+#endif
+    }
+
+    void stopStt()
+    {
+        if (mode == Mode::Stt)
+            stopAll();
+    }
+
+    void stopAll()
+    {
+        qDebug() << "[DEBUG] Engine::stopAll() called";
+        mode = Mode::Idle;
+#if defined(Q_OS_WIN32)
+        if (kwsStream) kwsStream.reset();
+        if (kws) kws.reset();
+        if (sttStream) sttStream.reset();
+        if (stt) stt.reset();
+        pendingSamples.clear();
+        lastPartial.clear();
+        stopMicIfIdle();
+#else
+        if (kwsProc)
+        {
+            kwsProc->kill();
+            kwsProc->deleteLater();
+            kwsProc = nullptr;
+        }
+        if (sttProc)
+        {
+            sttProc->kill();
+            sttProc->deleteLater();
+            sttProc = nullptr;
+        }
+#endif
+    }
+
+private:
+    enum class Mode {
+        Idle,
+        Wake,
+        Stt
+    };
+
+    struct ParsedArgs {
+        QString tokens;
+        QString encoder;
+        QString decoder;
+        QString joiner;
+        QString keywordsFile;
+        QString provider{QStringLiteral("cpu")};
+        QString decodingMethod{QStringLiteral("greedy_search")};
+        QString modelType{QStringLiteral("zipformer")};
+        int numThreads{2};
+    };
+
+    static bool fileExists(const QString& p)
+    {
+        return !p.trimmed().isEmpty() && QFileInfo::exists(p) && QFileInfo(p).isFile();
+    }
+
+    static std::optional<ParsedArgs> parseArgs(const QString& argLine, bool requireKeywordsFile)
+    {
+        qDebug() << "[DEBUG] parseArgs() input:" << argLine;
+        const QStringList argv = QProcess::splitCommand(argLine);
+        if (argv.isEmpty()) {
+            qDebug() << "[DEBUG] parseArgs() argv is empty";
+            return std::nullopt;
+        }
+
+        auto valueOf = [&](const QString& key) -> QString {
+            for (int i = 0; i + 1 < argv.size(); ++i) {
+                if (argv[i] == key)
+                    return argv[i + 1];
+            }
+            return {};
+        };
+
+        ParsedArgs out;
+        out.modelType = valueOf(QStringLiteral("--model-type")).trimmed();
+        if (out.modelType.isEmpty())
+            out.modelType = QStringLiteral("zipformer");
+
+        out.provider = valueOf(QStringLiteral("--provider")).trimmed();
+        if (out.provider.isEmpty())
+            out.provider = QStringLiteral("cpu");
+
+        const QString threads = valueOf(QStringLiteral("--num-threads")).trimmed();
+        if (!threads.isEmpty()) {
+            bool ok = false;
+            const int n = threads.toInt(&ok);
+            if (ok && n > 0)
+                out.numThreads = n;
+        }
+
+        const QString dm = valueOf(QStringLiteral("--decoding-method")).trimmed();
+        if (!dm.isEmpty())
+            out.decodingMethod = dm;
+
+        const QString whisperEnc = valueOf(QStringLiteral("--whisper-encoder")).trimmed();
+        const QString whisperDec = valueOf(QStringLiteral("--whisper-decoder")).trimmed();
+        if (!whisperEnc.isEmpty() || !whisperDec.isEmpty()) {
+            qDebug() << "[DEBUG] parseArgs() whisper encoder/decoder not supported in this block";
+            return std::nullopt;
+        }
+
+        out.tokens = valueOf(QStringLiteral("--tokens")).trimmed();
+        out.encoder = valueOf(QStringLiteral("--encoder")).trimmed();
+        out.decoder = valueOf(QStringLiteral("--decoder")).trimmed();
+        out.joiner = valueOf(QStringLiteral("--joiner")).trimmed();
+        out.keywordsFile = valueOf(QStringLiteral("--keywords-file")).trimmed();
+
+        qDebug() << "[DEBUG] parseArgs() parsed tokens:" << out.tokens << "encoder:" << out.encoder;
+
+        if (out.modelType != QStringLiteral("zipformer") && out.modelType != QStringLiteral("zipformer2")) {
+            qDebug() << "[DEBUG] parseArgs() unsupported modelType:" << out.modelType;
+            return std::nullopt;
+        }
+
+        if (!fileExists(out.tokens) || !fileExists(out.encoder) || !fileExists(out.decoder) || !fileExists(out.joiner)) {
+            qDebug() << "[DEBUG] parseArgs() one of the core files doesn't exist. Tokens:" << fileExists(out.tokens)
+                     << "Encoder:" << fileExists(out.encoder) << "Decoder:" << fileExists(out.decoder) << "Joiner:" << fileExists(out.joiner);
+            return std::nullopt;
+        }
+
+        if (requireKeywordsFile)
+        {
+            if (out.keywordsFile.isEmpty() || !fileExists(out.keywordsFile)) {
+                qDebug() << "[DEBUG] parseArgs() requireKeywordsFile is true but missing or not exists:" << out.keywordsFile;
+                return std::nullopt;
+            }
+        }
+        else if (!out.keywordsFile.isEmpty() && !fileExists(out.keywordsFile)) {
+            qDebug() << "[DEBUG] parseArgs() keywords file provided but not exists:" << out.keywordsFile;
+            return std::nullopt;
+        }
+
+        qDebug() << "[DEBUG] parseArgs() successful";
+        return out;
+    }
+
+    void startMicIfNeeded()
+    {
+#if defined(Q_OS_WIN32) && defined(AMAIGIRL_USE_QT_MULTIMEDIA)
+        if (mic && micDev)
+        {
+            if (!decodeTimer->isActive())
+                decodeTimer->start();
+            return;
+        }
+
+        QAudioDevice inputDevice = QMediaDevices::defaultAudioInput();
+        if (inputDevice.isNull()) {
+            onMicError(QStringLiteral("No default audio input device."));
+            return;
+        }
+
+        QAudioFormat fmt;
+        fmt.setSampleRate(16000);
+        fmt.setChannelCount(1);
+        fmt.setSampleFormat(QAudioFormat::Int16);
+
+        if (!inputDevice.isFormatSupported(fmt))
+            fmt = inputDevice.preferredFormat();
+
+        if (!fmt.isValid()) {
+            onMicError(QStringLiteral("Audio format not supported."));
+            return;
+        }
+
+        if (fmt.sampleFormat() != QAudioFormat::Int16 && fmt.sampleFormat() != QAudioFormat::Float && fmt.sampleFormat() != QAudioFormat::Int32) {
+            onMicError(QStringLiteral("Unsupported audio sample format."));
+            return;
+        }
+
+        inputFormat = fmt;
+        resampleStep = double(inputFormat.sampleRate()) / 16000.0;
+        resamplePos = 0.0;
+        monoBuf.clear();
+
+        mic = std::make_unique<QAudioSource>(inputDevice, fmt);
+        micDev = mic->start();
+        if (!micDev) {
+            onMicError(QStringLiteral("Failed to start audio input."));
+            mic.reset();
+            return;
+        }
+
+        QObject::connect(micDev, &QIODevice::readyRead, parent, [this] { onAudioReadyRead(); });
+        QObject::connect(mic.get(), &QAudioSource::stateChanged, parent, [this](QAudio::State state){
+            if (state == QAudio::StoppedState && mic && mic->error() != QAudio::NoError) {
+                onMicError(QStringLiteral("Audio input error."));
+            }
+        });
+
+        decodeTimer->start();
+#endif
+    }
+
+    void stopMicIfIdle()
+    {
+        qDebug() << "[DEBUG] stopMicIfIdle() called, mode =" << (int)mode;
+#if defined(Q_OS_WIN32) && defined(AMAIGIRL_USE_QT_MULTIMEDIA)
+        if (mode != Mode::Idle)
+            return;
+        if (decodeTimer)
+            decodeTimer->stop();
+        if (micDev) {
+            micDev = nullptr;
+        }
+        if (mic) {
+            qDebug() << "[DEBUG] stopMicIfIdle() stopping mic";
+            mic->stop();
+            mic.reset();
+        }
+#endif
+    }
+
+    void onAudioReadyRead()
+    {
+#if defined(Q_OS_WIN32) && defined(AMAIGIRL_USE_QT_MULTIMEDIA)
+        if (!micDev)
+            return;
+        const QByteArray data = micDev->readAll();
+        if (data.isEmpty())
+            return;
+
+        const int channels = qMax(1, inputFormat.channelCount());
+        const int bytesPerSample = inputFormat.bytesPerSample();
+        const int bytesPerFrame = bytesPerSample * channels;
+        if (bytesPerFrame <= 0 || data.size() < bytesPerFrame)
+            return;
+
+        const int frames = data.size() / bytesPerFrame;
+        monoBuf.reserve(monoBuf.size() + frames);
+
+        const char* raw = data.constData();
+        for (int i = 0; i < frames; ++i)
+        {
+            double acc = 0.0;
+            for (int ch = 0; ch < channels; ++ch)
+            {
+                const char* s = raw + (i * bytesPerFrame + ch * bytesPerSample);
+                float v = 0.0f;
+                if (inputFormat.sampleFormat() == QAudioFormat::Int16)
+                {
+                    int16_t x = 0;
+                    memcpy(&x, s, sizeof(int16_t));
+                    v = float(x) / 32768.0f;
+                }
+                else if (inputFormat.sampleFormat() == QAudioFormat::Int32)
+                {
+                    int32_t x = 0;
+                    memcpy(&x, s, sizeof(int32_t));
+                    v = float(double(x) / 2147483648.0);
+                }
+                else if (inputFormat.sampleFormat() == QAudioFormat::Float)
+                {
+                    float x = 0.0f;
+                    memcpy(&x, s, sizeof(float));
+                    v = x;
+                }
+                acc += v;
+            }
+            monoBuf.push_back(float(acc / double(channels)));
+        }
+
+        while (resamplePos + 1.0 < double(monoBuf.size()))
+        {
+            const int i = int(resamplePos);
+            const double frac = resamplePos - double(i);
+            const float a = monoBuf[size_t(i)];
+            const float b = monoBuf[size_t(i + 1)];
+            const float y = float((1.0 - frac) * double(a) + frac * double(b));
+            pendingSamples.push_back(y);
+            resamplePos += resampleStep;
+        }
+
+        const int drop = qMax(0, int(resamplePos) - 1);
+        if (drop > 0)
+        {
+            monoBuf.erase(monoBuf.begin(), monoBuf.begin() + drop);
+            resamplePos -= double(drop);
+        }
+#endif
+    }
+
+    void process()
+    {
+#if defined(Q_OS_WIN32) && defined(AMAIGIRL_USE_QT_MULTIMEDIA)
+        if (mode == Mode::Idle)
+            return;
+        if (pendingSamples.isEmpty())
+            return;
+
+        int consume = qMin(1600, pendingSamples.size());
+        if (consume <= 0)
+            return;
+        scratch.assign(pendingSamples.constBegin(), pendingSamples.constBegin() + consume);
+        pendingSamples.erase(pendingSamples.begin(), pendingSamples.begin() + consume);
+
+        const float* samples = scratch.data();
+        const int n = int(scratch.size());
+
+        if (mode == Mode::Wake && kws && kwsStream)
+        {
+            SherpaOnnxOnlineStreamAcceptWaveform(kwsStream.get(), 16000, samples, n);
+            while (SherpaOnnxIsKeywordStreamReady(kws.get(), kwsStream.get()))
+                SherpaOnnxDecodeKeywordStream(kws.get(), kwsStream.get());
+            
+            const SherpaOnnxKeywordResult* r = SherpaOnnxGetKeywordResult(kws.get(), kwsStream.get());
+            if (r) {
+                if (r->keyword && r->keyword[0] != '\0')
+                    onWake();
+                SherpaOnnxDestroyKeywordResult(r);
+            }
+            return;
+        }
+
+        if (mode == Mode::Stt && stt && sttStream)
+        {
+            SherpaOnnxOnlineStreamAcceptWaveform(sttStream.get(), 16000, samples, n);
+            while (SherpaOnnxIsOnlineStreamReady(stt.get(), sttStream.get()))
+                SherpaOnnxDecodeOnlineStream(stt.get(), sttStream.get());
+            
+            const SherpaOnnxOnlineRecognizerResult* r = SherpaOnnxGetOnlineStreamResult(stt.get(), sttStream.get());
+            if (r) {
+                const QString text = normalizeCandidateText(QString::fromUtf8(r->text));
+                if (!text.isEmpty() && text != lastPartial)
+                {
+                    lastPartial = text;
+                    onSttPartial(text);
+                }
+                SherpaOnnxDestroyOnlineRecognizerResult(r);
+            }
+        }
+#endif
+    }
+
+private:
+    QString exePath(const QString& baseName) const
+    {
+        const QString dir = settings.binDir.trimmed();
+        if (dir.isEmpty()) return {};
+#if defined(Q_OS_WIN32)
+        const QString exe = baseName.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive)
+                                ? baseName
+                                : (baseName + QStringLiteral(".exe"));
+        return QDir(dir).filePath(exe);
+#else
+        return QDir(dir).filePath(baseName);
+#endif
+    }
+
+    QObject* parent{nullptr};
+    SettingsSnapshot settings;
+    Mode mode{Mode::Idle};
+
+    std::function<void()> onWake;
+    std::function<void(const QString&)> onSttPartial;
+    std::function<void(const QString&)> onMicError;
+
+#if defined(Q_OS_WIN32)
+    struct KwsDeleter { void operator()(const SherpaOnnxKeywordSpotter* p) const { if(p) { qDebug() << "[DEBUG] KwsDeleter called"; SherpaOnnxDestroyKeywordSpotter(p); } } };
+    struct SttDeleter { void operator()(const SherpaOnnxOnlineRecognizer* p) const { if(p) { qDebug() << "[DEBUG] SttDeleter called"; SherpaOnnxDestroyOnlineRecognizer(p); } } };
+    struct StreamDeleter { void operator()(const SherpaOnnxOnlineStream* p) const { if(p) { qDebug() << "[DEBUG] StreamDeleter called"; SherpaOnnxDestroyOnlineStream(p); } } };
+    std::unique_ptr<const SherpaOnnxKeywordSpotter, KwsDeleter> kws;
+    std::unique_ptr<const SherpaOnnxOnlineStream, StreamDeleter> kwsStream;
+    std::unique_ptr<const SherpaOnnxOnlineRecognizer, SttDeleter> stt;
+    std::unique_ptr<const SherpaOnnxOnlineStream, StreamDeleter> sttStream;
+
+#if defined(AMAIGIRL_USE_QT_MULTIMEDIA)
+    std::unique_ptr<QAudioSource> mic;
+    QIODevice* micDev{nullptr};
+    QTimer* decodeTimer{nullptr};
+    QAudioFormat inputFormat;
+    double resampleStep{1.0};
+    double resamplePos{0.0};
+    std::vector<float> monoBuf;
+    QVector<float> pendingSamples;
+    std::vector<float> scratch;
+#endif
+#else
+    QProcess* kwsProc{nullptr};
+    QProcess* sttProc{nullptr};
+#endif
+
+    QString lastPartial;
+};
+#endif
 
 #if defined(Q_OS_WIN32)
 static bool setAudioSessionVolumeForPid(DWORD pid, float vol01)
@@ -248,30 +798,11 @@ static bool setAudioSessionVolumeForPid(DWORD pid, float vol01)
 
 void OfflineVoiceService::start()
 {
-    if (m_settings.wakeEnabled)
-        startKws();
 }
 
 void OfflineVoiceService::stop()
 {
     stopTts();
-    stopStt();
-    stopKws();
-}
-
-void OfflineVoiceService::startListeningOnce()
-{
-    if (!m_settings.sttEnabled)
-        return;
-    stopKws();
-    startStt();
-}
-
-void OfflineVoiceService::cancelListening()
-{
-    stopStt();
-    if (m_settings.wakeEnabled)
-        startKws();
 }
 
 void OfflineVoiceService::speakText(const QString& text)
@@ -323,110 +854,16 @@ static void applySherpaEnv(QProcess* p, const QString& binDir)
     p->setProcessEnvironment(env);
 }
 
-void OfflineVoiceService::startKws()
-{
-    if (m_kws) return;
-    const QString program = exePath(QStringLiteral("sherpa-onnx-keyword-spotter-microphone"));
-    if (program.isEmpty() || !QFileInfo::exists(program))
-        return;
-
-    m_kws = new QProcess(this);
-    m_kws->setProgram(program);
-    m_kws->setArguments(splitArgs(m_settings.kwsArgs));
-    applySherpaEnv(m_kws, m_settings.binDir);
-    m_kws->setProcessChannelMode(QProcess::MergedChannels);
-    connect(m_kws, &QProcess::readyReadStandardOutput, this, &OfflineVoiceService::onKwsReadyRead);
-    connect(m_kws, &QProcess::errorOccurred, this, [this](QProcess::ProcessError){
-        if (!m_kws) return;
-        const QString out = QString::fromLocal8Bit(m_kws->readAll());
-        showMicHint(out);
-    });
-    connect(m_kws, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, [this](int exitCode, QProcess::ExitStatus){
-        if (!m_kws) return;
-        const QString out = QString::fromLocal8Bit(m_kws->readAll());
-        if (exitCode != 0)
-            showMicHint(out);
-        m_kws->deleteLater();
-        m_kws = nullptr;
-        if (exitCode == -1073741515)
-            return;
-        if (m_settings.wakeEnabled)
-        {
-            QTimer::singleShot(1200, this, [this]{ startKws(); });
-        }
-    });
-    m_kws->start();
-}
-
-void OfflineVoiceService::stopKws()
-{
-    if (!m_kws) return;
-    m_kws->kill();
-    m_kws->deleteLater();
-    m_kws = nullptr;
-}
-
-void OfflineVoiceService::startStt()
-{
-    if (m_stt) return;
-    const QString program = exePath(QStringLiteral("sherpa-onnx-microphone"));
-    if (program.isEmpty() || !QFileInfo::exists(program))
-        return;
-
-    m_sttBest.clear();
-    m_sttLastPartial.clear();
-
-    m_stt = new QProcess(this);
-    m_stt->setProgram(program);
-    m_stt->setArguments(splitArgs(m_settings.sttArgs));
-    applySherpaEnv(m_stt, m_settings.binDir);
-    m_stt->setProcessChannelMode(QProcess::MergedChannels);
-    connect(m_stt, &QProcess::readyReadStandardOutput, this, &OfflineVoiceService::onSttReadyRead);
-    connect(m_stt, &QProcess::errorOccurred, this, [this](QProcess::ProcessError){
-        if (!m_stt) return;
-        const QString out = QString::fromLocal8Bit(m_stt->readAll());
-        showMicHint(m_stt->errorString() + QStringLiteral("\n") + out);
-    });
-    connect(m_stt, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, [this](int exitCode, QProcess::ExitStatus){
-        if (!m_stt) return;
-        const QString out = QString::fromLocal8Bit(m_stt->readAll());
-        if (exitCode != 0)
-            showMicHint(out);
-        m_stt->deleteLater();
-        m_stt = nullptr;
-        if (m_settings.wakeEnabled)
-            startKws();
-    });
-    m_stt->start();
-}
-
-void OfflineVoiceService::stopStt()
-{
-    m_sttIdleTimer->stop();
-    if (!m_stt) return;
-    m_stt->kill();
-    m_stt->deleteLater();
-    m_stt = nullptr;
-}
-
-void OfflineVoiceService::finalizeStt()
-{
-    if (!m_stt) return;
-    const QString finalText = !m_sttBest.trimmed().isEmpty() ? m_sttBest.trimmed() : m_sttLastPartial.trimmed();
-    stopStt();
-    if (!finalText.isEmpty())
-        emit sttFinalText(finalText);
-}
-
 void OfflineVoiceService::startTts(const QString& text)
 {
     stopTts();
+    QString args = m_settings.ttsArgs;
 #if defined(AMAIGIRL_USE_QT_MULTIMEDIA)
     const QString programGen = exePath(QStringLiteral("sherpa-onnx-offline-tts"));
     const QString programPlay = exePath(QStringLiteral("sherpa-onnx-offline-tts-play"));
     const bool canGen = !programGen.isEmpty() && QFileInfo::exists(programGen);
     const bool canPlay = !programPlay.isEmpty() && QFileInfo::exists(programPlay);
-    const QString program = canGen ? programGen : programPlay;
+    const QString program = canPlay ? programPlay : programGen;
     if (!canGen && !canPlay)
         return;
 #else
@@ -435,7 +872,26 @@ void OfflineVoiceService::startTts(const QString& text)
         return;
 #endif
 
-    QString args = m_settings.ttsArgs;
+#if defined(AMAIGIRL_USE_QT_MULTIMEDIA)
+    QString wavPath;
+    const bool useWavGen = (program == programGen);
+    if (useWavGen)
+    {
+        QDir cache(SettingsManager::instance().cacheDir());
+        if (!cache.exists()) cache.mkpath(QStringLiteral("."));
+        wavPath = cache.filePath(QStringLiteral("tts_%1.wav").arg(QDateTime::currentMSecsSinceEpoch()));
+        m_ttsWavPath = wavPath;
+        if (!args.contains(QStringLiteral("--output-filename")))
+        {
+            const QString outArg = QStringLiteral("--output-filename=\"%1\"").arg(wavPath);
+            if (args.contains(QStringLiteral("{text}")))
+                args.replace(QStringLiteral("{text}"), outArg + QStringLiteral(" {text}"));
+            else
+                args = outArg + QStringLiteral(" ") + args;
+        }
+    }
+#endif
+
     QString escaped = text;
     escaped.replace('"', QStringLiteral("\\\""));
     const QString quoted = QStringLiteral("\"") + escaped + QStringLiteral("\"");
@@ -443,19 +899,6 @@ void OfflineVoiceService::startTts(const QString& text)
         args.replace(QStringLiteral("{text}"), quoted);
     else
         args = args + QStringLiteral(" ") + quoted;
-
-#if defined(AMAIGIRL_USE_QT_MULTIMEDIA)
-    QString wavPath;
-    if (canGen)
-    {
-        QDir cache(SettingsManager::instance().cacheDir());
-        if (!cache.exists()) cache.mkpath(QStringLiteral("."));
-        wavPath = cache.filePath(QStringLiteral("tts_%1.wav").arg(QDateTime::currentMSecsSinceEpoch()));
-        m_ttsWavPath = wavPath;
-        if (!args.contains(QStringLiteral("--output-filename")))
-            args += QStringLiteral(" --output-filename \"%1\"").arg(wavPath);
-    }
-#endif
 
     m_tts = new QProcess(this);
     m_tts->setProgram(program);
@@ -511,7 +954,7 @@ void OfflineVoiceService::startTts(const QString& text)
 
 #if defined(Q_OS_WIN32)
 #if defined(AMAIGIRL_USE_QT_MULTIMEDIA)
-    if (!canGen)
+    if (program == programPlay)
     {
 #endif
         const float vol01 = qBound(0.0f, float(m_settings.ttsVolumePercent) / 100.0f, 1.0f);
@@ -544,42 +987,47 @@ void OfflineVoiceService::stopTts()
     m_tts = nullptr;
 }
 
-void OfflineVoiceService::onKwsReadyRead()
+
+OfflineVoiceService::OfflineVoiceService(QObject* parent)
+    : QObject(parent)
 {
-    if (!m_kws) return;
-    const QString wake = m_settings.wakeWord.trimmed();
-    const QString wakeCompact = QString(wake).remove(QRegularExpression(QStringLiteral("\\s+")));
-    const QByteArray data = m_kws->readAllStandardOutput();
-    const QString out = QString::fromLocal8Bit(data);
-    const QStringList lines = out.split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts);
-    for (QString line : lines)
-    {
-        line = line.trimmed();
-        if (line.isEmpty()) continue;
-        const QString lineCompact = QString(line).remove(QRegularExpression(QStringLiteral("\\s+")));
-        if (!wakeCompact.isEmpty() && (line.contains(wake, Qt::CaseInsensitive) || lineCompact.contains(wakeCompact, Qt::CaseInsensitive)))
-        {
-            emit wakeWordDetected();
-            startListeningOnce();
-            break;
-        }
-    }
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this]{
+        stop();
+    });
 }
 
-void OfflineVoiceService::onSttReadyRead()
+OfflineVoiceService::~OfflineVoiceService() = default;
+
+OfflineVoiceService::SettingsSnapshot OfflineVoiceService::readSettings() const
 {
-    if (!m_stt) return;
-    const QByteArray data = m_stt->readAllStandardOutput();
-    const QString out = QString::fromLocal8Bit(data);
-    const QStringList lines = out.split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts);
-    for (QString line : lines)
-    {
-        line = normalizeCandidateText(line);
-        if (line.isEmpty()) continue;
-        m_sttLastPartial = line;
-        if (line.size() >= m_sttBest.size())
-            m_sttBest = line;
-        emit sttPartialText(line);
-        m_sttIdleTimer->start(1000);
-    }
+    SettingsSnapshot s;
+    auto& sm = SettingsManager::instance();
+    s.ttsEnabled = sm.offlineTtsEnabled();
+    s.binDir = sm.sherpaOnnxBinDir();
+    s.ttsArgs = sm.sherpaTtsArgs();
+    s.ttsVolumePercent = sm.ttsVolumePercent();
+    return s;
+}
+
+void OfflineVoiceService::applySettingsSnapshot(const SettingsSnapshot& next)
+{
+    const bool changedBin = (m_settings.binDir != next.binDir);
+    const bool changedTts = (m_settings.ttsEnabled != next.ttsEnabled) || (m_settings.ttsArgs != next.ttsArgs) || (m_settings.ttsVolumePercent != next.ttsVolumePercent);
+
+    m_settings = next;
+
+    if (changedTts)
+        g_speakerHintShown = false;
+
+    if (changedBin || changedTts)
+        stopTts();
+}
+
+void OfflineVoiceService::reloadFromSettings()
+{
+    qDebug() << "[DEBUG] OfflineVoiceService::reloadFromSettings() start";
+    applySettingsSnapshot(readSettings());
+    qDebug() << "[DEBUG] OfflineVoiceService::reloadFromSettings() middle";
+    start();
+    qDebug() << "[DEBUG] OfflineVoiceService::reloadFromSettings() end";
 }

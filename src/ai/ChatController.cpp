@@ -50,7 +50,7 @@ QString buildBaseSystemPrompt()
     return systemPrompt.trimmed();
 }
 
-QString buildPromptFromHistory(const QString& modelFolder)
+QString buildHistoryContextForSystemPrompt(const QString& modelFolder, const QString& currentUserText)
 {
     const QJsonArray all = loadMessages(modelFolder);
     QJsonArray filtered;
@@ -67,26 +67,37 @@ QString buildPromptFromHistory(const QString& modelFolder)
 
     const int historyCount = qMax(0, SettingsManager::instance().chatContextMessages());
     const int total = filtered.size();
-    if (total <= 0)
+    if (total <= 0 || historyCount <= 0)
         return {};
 
-    const int window = qMin(total, qMax(1, historyCount + 1));
-    const int start = qMax(0, total - window);
+    int end = total;
+    if (end > 0)
+    {
+        const QJsonObject last = filtered.at(end - 1).toObject();
+        const QString lastRole = last.value(QStringLiteral("role")).toString();
+        const QString lastContent = last.value(QStringLiteral("content")).toString().trimmed();
+        if (lastRole == QStringLiteral("user") && lastContent == currentUserText.trimmed())
+            --end;
+    }
+    if (end <= 0)
+        return {};
 
-    QString prompt;
-    for (int i = start; i < total; ++i)
+    const int window = qMin(end, historyCount);
+    const int start = qMax(0, end - window);
+
+    QString out = QStringLiteral("以下是最近的对话记录（仅供参考，不要复述）：\n");
+    for (int i = start; i < end; ++i)
     {
         const QJsonObject o = filtered.at(i).toObject();
         const QString role = o.value("role").toString();
         const QString content = o.value("content").toString();
         if (role == QStringLiteral("user"))
-            prompt += QStringLiteral("User: ") + content + QStringLiteral("\n");
+            out += QStringLiteral("User: ") + content + QStringLiteral("\n");
         else
-            prompt += QStringLiteral("Assistant: ") + content + QStringLiteral("\n");
+            out += QStringLiteral("Assistant: ") + content + QStringLiteral("\n");
     }
 
-    prompt += QStringLiteral("Assistant:");
-    return prompt;
+    return out.trimmed();
 }
 
 struct Live2DDirectives {
@@ -233,7 +244,17 @@ void ChatController::setLlmStyle(const QString& style)
     if (m_llm) m_llm->setPreferredStyle(SettingsManager::instance().llmStyle());
     if (m_chatWindow) m_chatWindow->setLlmStyle(SettingsManager::instance().llmStyle());
     if (m_llm && m_llm->isRunning())
+    {
+        ++m_requestSeq;
         m_llm->shutdown();
+        if (m_chatWindow)
+        {
+            m_chatWindow->cancelAssistantDraft();
+            m_chatWindow->setBusy(false);
+        }
+        m_assistantDraft.clear();
+        emit assistantBubbleTextChanged(QString(), true);
+    }
 }
 
 void ChatController::setLlmModelSize(const QString& size)
@@ -242,7 +263,17 @@ void ChatController::setLlmModelSize(const QString& size)
     if (m_llm) m_llm->setModelSize(SettingsManager::instance().llmModelSize());
     if (m_chatWindow) m_chatWindow->setLlmModelSize(SettingsManager::instance().llmModelSize());
     if (m_llm && m_llm->isRunning())
+    {
+        ++m_requestSeq;
         m_llm->shutdown();
+        if (m_chatWindow)
+        {
+            m_chatWindow->cancelAssistantDraft();
+            m_chatWindow->setBusy(false);
+        }
+        m_assistantDraft.clear();
+        emit assistantBubbleTextChanged(QString(), true);
+    }
     if (!m_modelFolder.isEmpty())
         onModelChanged(m_modelFolder, m_modelDir);
 }
@@ -325,16 +356,20 @@ void ChatController::onSendRequested(const QString& modelFolder, const QString& 
     if (!m_chatWindow) return;
     if (modelFolder.isEmpty() || userText.trimmed().isEmpty()) return;
 
+    if (m_llm && m_llm->isRunning())
+    {
+        m_llm->abort();
+        m_chatWindow->cancelAssistantDraft();
+        m_chatWindow->setBusy(false);
+        m_assistantDraft.clear();
+        emit assistantBubbleTextChanged(QString(), true);
+    }
+
     m_modelFolder = modelFolder;
     m_assistantDraft.clear();
     emit assistantBubbleTextChanged(QString(), false);
 
-    if (m_llm && !m_llm->isRunning())
-        m_llm->setSystemPrompt(buildBaseSystemPrompt());
-
     m_chatWindow->appendUserMessage(userText);
-
-    const QString prompt = buildPromptFromHistory(modelFolder);
 
     m_chatWindow->appendAiMessageStart();
     m_chatWindow->setBusy(true);
@@ -345,7 +380,13 @@ void ChatController::onSendRequested(const QString& modelFolder, const QString& 
     {
         m_llm->setPreferredStyle(SettingsManager::instance().llmStyle());
         m_llm->setModelSize(SettingsManager::instance().llmModelSize());
-        m_llm->generate(prompt.isEmpty() ? userText.trimmed() : prompt, SettingsManager::instance().llmMaxTokens());
+        QString systemPrompt = buildBaseSystemPrompt();
+        const QString historyContext = buildHistoryContextForSystemPrompt(modelFolder, userText);
+        if (!historyContext.isEmpty())
+            systemPrompt = systemPrompt + QStringLiteral("\n\n") + historyContext;
+        if (!m_llm->isRunning())
+            m_llm->setSystemPrompt(systemPrompt);
+        m_llm->generate(userText.trimmed(), SettingsManager::instance().llmMaxTokens());
     }
 }
 

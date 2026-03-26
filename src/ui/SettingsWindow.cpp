@@ -37,6 +37,7 @@
 #include <QDialog>
 #include <QTimeEdit>
 #include <QSpinBox>
+#include <QToolButton>
 #include <QListWidget>
 #include <QUuid>
 #include <QScreen>
@@ -212,22 +213,16 @@ public:
     ThemeWidgets::LineEdit* ttsVoice{nullptr};
 
     // Offline voice
-    ThemeWidgets::Switch* offlineSttEnabled{nullptr};
     ThemeWidgets::Switch* offlineTtsEnabled{nullptr};
-    ThemeWidgets::Switch* wakeWordEnabled{nullptr};
     ThemeWidgets::LineEdit* sherpaOnnxBinDir{nullptr};
     ThemeWidgets::Button* sherpaChooseBtn{nullptr};
-    ThemeWidgets::LineEdit* wakeWordText{nullptr};
-    ThemeWidgets::ComboBox* sherpaKwsModelCombo{nullptr};
-    ThemeWidgets::ComboBox* sherpaSttModelCombo{nullptr};
     ThemeWidgets::ComboBox* sherpaTtsModelCombo{nullptr};
-    QLabel* sherpaKwsModelHint{nullptr};
-    QLabel* sherpaSttModelHint{nullptr};
     QLabel* sherpaTtsModelHint{nullptr};
-    ThemeWidgets::PlainTextEdit* sherpaKwsArgs{nullptr};
-    ThemeWidgets::PlainTextEdit* sherpaSttArgs{nullptr};
     ThemeWidgets::PlainTextEdit* sherpaTtsArgs{nullptr};
     QWidget* sherpaBinRow{nullptr};
+    QSpinBox* ttsSidSpin{nullptr};
+    QLabel* ttsSidHint{nullptr};
+    QLabel* ttsSidDesc{nullptr};
     QSlider* ttsVolumeSlider{nullptr};
     ThemeWidgets::LineEdit* ttsVolumeEdit{nullptr};
 
@@ -745,38 +740,10 @@ SettingsWindow::SettingsWindow(QWidget *parent) : QMainWindow(parent), d(new Imp
         }
         form2->addRow(tr("LLM风格："), d->llmStyleCombo);
 
-        d->offlineSttEnabled = new ThemeWidgets::Switch(tr("启用离线语音识别（STT）"), d->aiTab);
-        d->offlineTtsEnabled = new ThemeWidgets::Switch(tr("启用离线语音合成（TTS）"), d->aiTab);
-        d->wakeWordEnabled = new ThemeWidgets::Switch(tr("启用唤醒词（KWS）"), d->aiTab);
-        d->offlineSttEnabled->setChecked(SettingsManager::instance().offlineSttEnabled());
+        d->offlineTtsEnabled = new ThemeWidgets::Switch(tr("启用离线语音合成（TTS，文字转语音）"), d->aiTab);
         d->offlineTtsEnabled->setChecked(SettingsManager::instance().offlineTtsEnabled());
-        d->wakeWordEnabled->setChecked(SettingsManager::instance().wakeWordEnabled());
-
-        form2->addRow(d->offlineSttEnabled);
         form2->addRow(d->offlineTtsEnabled);
-        form2->addRow(d->wakeWordEnabled);
 
-        d->wakeWordText = new ThemeWidgets::LineEdit(SettingsManager::instance().wakeWordText(), d->aiTab);
-        d->wakeWordText->setPlaceholderText(tr("例如：小墨"));
-        form2->addRow(tr("唤醒词："), d->wakeWordText);
-
-        auto listVoiceModelDirs = [](const QString& sub) -> QStringList {
-            const QString base = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("voice_deps/models/") + sub);
-            QDir d(base);
-            if (!d.exists()) return {};
-            return d.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
-        };
-
-        d->sherpaKwsModelCombo = new ThemeWidgets::ComboBox(d->aiTab);
-        d->sherpaKwsModelCombo->addItem(tr("自动（推荐）"), QString());
-        for (const QString& name : listVoiceModelDirs(QStringLiteral("kws")))
-            d->sherpaKwsModelCombo->addItem(name, name);
-        {
-            const QString saved = SettingsManager::instance().sherpaKwsModel();
-            const int idx = d->sherpaKwsModelCombo->findData(saved);
-            d->sherpaKwsModelCombo->setCurrentIndex(idx >= 0 ? idx : 0);
-        }
-        form2->addRow(tr("KWS模型："), d->sherpaKwsModelCombo);
         auto styleModelHint = [](QLabel* lab){
             if (!lab) return;
             lab->setWordWrap(true);
@@ -787,27 +754,50 @@ SettingsWindow::SettingsWindow(QWidget *parent) : QMainWindow(parent), d(new Imp
             pal.setColor(QPalette::WindowText, pal.color(QPalette::PlaceholderText));
             lab->setPalette(pal);
         };
-        d->sherpaKwsModelHint = new QLabel(d->aiTab);
-        styleModelHint(d->sherpaKwsModelHint);
-        form2->addRow(QString(), d->sherpaKwsModelHint);
+        auto* ttsDesc = new QLabel(tr("TTS 会把文字转成语音播放。开启后，会自动朗读 AI 的最终回复，适合免看屏幕或提升沉浸感。"), d->aiTab);
+        styleModelHint(ttsDesc);
+        form2->addRow(QString(), ttsDesc);
 
-        d->sherpaSttModelCombo = new ThemeWidgets::ComboBox(d->aiTab);
-        d->sherpaSttModelCombo->addItem(tr("自动（推荐）"), QString());
-        for (const QString& name : listVoiceModelDirs(QStringLiteral("asr")))
-            d->sherpaSttModelCombo->addItem(name, name);
-        {
-            const QString saved = SettingsManager::instance().sherpaSttModel();
-            const int idx = d->sherpaSttModelCombo->findData(saved);
-            d->sherpaSttModelCombo->setCurrentIndex(idx >= 0 ? idx : 0);
-        }
-        form2->addRow(tr("STT模型："), d->sherpaSttModelCombo);
-        d->sherpaSttModelHint = new QLabel(d->aiTab);
-        styleModelHint(d->sherpaSttModelHint);
-        form2->addRow(QString(), d->sherpaSttModelHint);
+        auto listVoiceModelDirs = []() -> QStringList {
+            QStringList out;
+            const QString appBase = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("voice_deps/models"));
+            const QString resBase = QDir(appResourcePath(QStringLiteral("voice_deps"))).filePath(QStringLiteral("models"));
+            const QStringList bases{appBase, resBase};
+            for (const QString& base : bases)
+            {
+                QDir d(base);
+                if (!d.exists()) continue;
+                const QStringList one = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+                for (const QString& name : one)
+                {
+                    if (!out.contains(name))
+                        out.push_back(name);
+                }
+            }
+            out.removeAll(QStringLiteral("tts"));
+            out.sort();
+            return out;
+        };
+
+        auto findModelDir = [](const QString& modelId) -> QString {
+            const QString id = modelId.trimmed();
+            if (id.isEmpty())
+                return {};
+            const QString appBase = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("voice_deps/models"));
+            const QString resBase = QDir(appResourcePath(QStringLiteral("voice_deps"))).filePath(QStringLiteral("models"));
+            const QStringList bases{appBase, resBase};
+            for (const QString& base : bases)
+            {
+                const QString p = QDir(base).filePath(id);
+                if (QFileInfo::exists(p) && QFileInfo(p).isDir())
+                    return p;
+            }
+            return {};
+        };
 
         d->sherpaTtsModelCombo = new ThemeWidgets::ComboBox(d->aiTab);
         d->sherpaTtsModelCombo->addItem(tr("自动（推荐）"), QString());
-        for (const QString& name : listVoiceModelDirs(QStringLiteral("tts")))
+        for (const QString& name : listVoiceModelDirs())
             d->sherpaTtsModelCombo->addItem(name, name);
         {
             const QString saved = SettingsManager::instance().sherpaTtsModel();
@@ -818,6 +808,59 @@ SettingsWindow::SettingsWindow(QWidget *parent) : QMainWindow(parent), d(new Imp
         d->sherpaTtsModelHint = new QLabel(d->aiTab);
         styleModelHint(d->sherpaTtsModelHint);
         form2->addRow(QString(), d->sherpaTtsModelHint);
+
+        QWidget* sidRow = new QWidget(d->aiTab);
+        auto sidHl = new QHBoxLayout(sidRow);
+        sidHl->setContentsMargins(0,0,0,0);
+        sidHl->setSpacing(0);
+
+        d->ttsSidSpin = new QSpinBox(sidRow);
+        d->ttsSidSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        d->ttsSidSpin->setRange(0, 99999);
+        d->ttsSidSpin->setSingleStep(1);
+        d->ttsSidSpin->setAccelerated(true);
+        d->ttsSidSpin->setKeyboardTracking(false);
+        d->ttsSidSpin->setValue(SettingsManager::instance().sherpaTtsSid());
+        d->ttsSidSpin->setFixedWidth(120);
+
+        QWidget* sidBtns = new QWidget(sidRow);
+        sidBtns->setFixedWidth(24);
+        auto sidVl = new QVBoxLayout(sidBtns);
+        sidVl->setContentsMargins(0,0,0,0);
+        sidVl->setSpacing(0);
+
+        auto sidUp = new QToolButton(sidBtns);
+        sidUp->setText(QStringLiteral("▲"));
+        sidUp->setFocusPolicy(Qt::NoFocus);
+        sidUp->setAutoRepeat(true);
+        sidUp->setAutoRepeatDelay(350);
+        sidUp->setAutoRepeatInterval(60);
+        sidUp->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+
+        auto sidDown = new QToolButton(sidBtns);
+        sidDown->setText(QStringLiteral("▼"));
+        sidDown->setFocusPolicy(Qt::NoFocus);
+        sidDown->setAutoRepeat(true);
+        sidDown->setAutoRepeatDelay(350);
+        sidDown->setAutoRepeatInterval(60);
+        sidDown->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+
+        sidVl->addWidget(sidUp);
+        sidVl->addWidget(sidDown);
+
+        sidHl->addWidget(d->ttsSidSpin);
+        sidHl->addWidget(sidBtns);
+
+        form2->addRow(tr("声线（sid）："), sidRow);
+
+        connect(sidUp, &QToolButton::clicked, this, [this]{ if (d->ttsSidSpin) d->ttsSidSpin->stepUp(); });
+        connect(sidDown, &QToolButton::clicked, this, [this]{ if (d->ttsSidSpin) d->ttsSidSpin->stepDown(); });
+        d->ttsSidHint = new QLabel(d->aiTab);
+        styleModelHint(d->ttsSidHint);
+        form2->addRow(QString(), d->ttsSidHint);
+        d->ttsSidDesc = new QLabel(d->aiTab);
+        styleModelHint(d->ttsSidDesc);
+        form2->addRow(QString(), d->ttsSidDesc);
 
         {
             QWidget* row = new QWidget(d->aiTab);
@@ -882,102 +925,266 @@ SettingsWindow::SettingsWindow(QWidget *parent) : QMainWindow(parent), d(new Imp
         });
         connect(d->aiSystemPrompt, &QPlainTextEdit::textChanged, this, [this]{ SettingsManager::instance().setAiSystemPrompt(d->aiSystemPrompt->toPlainText()); });
 
-        auto updateSherpaModelHints = [this]{
-            auto mk = [](const QString& id) -> QString {
-                const QString s = id.trimmed();
-                if (s.isEmpty())
-                    return QObject::tr("自动：在已安装模型中选择一个。");
-                const QString l = s.toLower();
-                if (l.contains(QStringLiteral("wenetspeech")))
-                    return QObject::tr("中文唤醒词（wenetspeech 10k小时，拼音建模，约3.3M）。");
-                if (l.contains(QStringLiteral("gigaspeech")))
-                    return QObject::tr("英文唤醒词（gigaspeech 10k小时，BPE建模，约3.3M）。");
-                if (l.contains(QStringLiteral("zh-en")))
-                    return QObject::tr("中英双语唤醒词（zipformer，小模型）。");
-                return QObject::tr("唤醒词模型（KWS）。");
+        auto updateSherpaModelHints = [this, findModelDir]{
+            struct SidInfo
+            {
+                bool sidEffective{false};
+                bool multiSpeaker{false};
+                int minSid{0};
+                int maxSid{0};
+                QHash<int, QString> sidDesc;
+                QString sidLabel;
             };
-            auto ms = [](const QString& id) -> QString {
-                const QString s = id.trimmed();
-                if (s.isEmpty())
-                    return QObject::tr("自动：在已安装模型中选择一个。");
-                const QString l = s.toLower();
-                if (l.contains(QStringLiteral("whisper")))
+
+            auto loadSidInfo = [this, findModelDir](const QString& id) -> SidInfo {
+                SidInfo info;
+                const QString modelId = id.trimmed();
+                if (modelId.isEmpty())
+                    return info;
+
+                const QString modelDir = findModelDir(modelId);
+                const QString l = modelId.toLower();
+
+                if (!modelDir.isEmpty())
                 {
-                    if (l.contains(QStringLiteral("tiny")))
-                        return QObject::tr("Whisper Tiny：速度快，精度较低。");
-                    if (l.contains(QStringLiteral("small")))
-                        return QObject::tr("Whisper Small：速度/精度平衡。");
-                    if (l.contains(QStringLiteral("base")))
-                        return QObject::tr("Whisper Base：通用平衡（推荐）。");
-                    if (l.contains(QStringLiteral("medium")))
-                        return QObject::tr("Whisper Medium：精度更高，较慢。");
-                    return QObject::tr("Whisper：通用离线语音识别模型。");
+                    const QDir d(modelDir);
+                    const QStringList jsons = d.entryList(QStringList() << QStringLiteral("*.onnx.json"), QDir::Files, QDir::Name);
+                    if (!jsons.isEmpty())
+                    {
+                        QFile f(d.filePath(jsons.front()));
+                        if (f.open(QIODevice::ReadOnly))
+                        {
+                            const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+                            const QJsonObject root = doc.object();
+                            const int num = root.value(QStringLiteral("num_speakers")).toInt(0);
+                            info.sidEffective = num > 0;
+                            info.multiSpeaker = num > 1;
+                            info.minSid = 0;
+                            info.maxSid = num > 0 ? (num - 1) : 0;
+                            if (root.value(QStringLiteral("speaker_id_map")).isObject())
+                            {
+                                const QJsonObject m = root.value(QStringLiteral("speaker_id_map")).toObject();
+                                for (auto it = m.begin(); it != m.end(); ++it)
+                                {
+                                    const int sid = it.value().toInt(-1);
+                                    if (sid >= 0)
+                                        info.sidDesc.insert(sid, it.key());
+                                }
+                            }
+                            if (info.multiSpeaker)
+                                info.sidLabel = QObject::tr("多说话人，sid %1-%2").arg(info.minSid).arg(info.maxSid);
+                            else
+                                info.sidLabel = QObject::tr("单说话人");
+                            return info;
+                        }
+                    }
+
+                    if (QFileInfo::exists(d.filePath(QStringLiteral("speakers.txt"))))
+                    {
+                        QFile f(d.filePath(QStringLiteral("speakers.txt")));
+                        if (f.open(QIODevice::ReadOnly))
+                        {
+                            const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                            info.sidEffective = true;
+                            info.multiSpeaker = lines.size() > 1;
+                            info.minSid = 0;
+                            info.maxSid = lines.isEmpty() ? 0 : (lines.size() - 1);
+                            for (int i = 0; i < lines.size(); ++i)
+                            {
+                                const QString one = lines.at(i).trimmed();
+                                if (!one.isEmpty())
+                                    info.sidDesc.insert(i, one);
+                            }
+                            info.sidLabel = info.multiSpeaker ? QObject::tr("多说话人，sid %1-%2").arg(info.minSid).arg(info.maxSid) : QObject::tr("单说话人");
+                            return info;
+                        }
+                    }
+
+                    if (QFileInfo::exists(d.filePath(QStringLiteral("G_multisperaker_latest.json"))))
+                    {
+                        QFile f(d.filePath(QStringLiteral("G_multisperaker_latest.json")));
+                        if (f.open(QIODevice::ReadOnly))
+                        {
+                            const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+                            const QJsonObject speakers = doc.object().value(QStringLiteral("speakers")).toObject();
+                            int maxSid = -1;
+                            for (auto it = speakers.begin(); it != speakers.end(); ++it)
+                            {
+                                const int sid = it.value().toInt(-1);
+                                if (sid >= 0)
+                                {
+                                    info.sidDesc.insert(sid, it.key());
+                                    if (sid > maxSid) maxSid = sid;
+                                }
+                            }
+                            if (maxSid >= 0)
+                            {
+                                info.sidEffective = true;
+                                info.multiSpeaker = true;
+                                info.minSid = 0;
+                                info.maxSid = maxSid;
+                                info.sidLabel = QObject::tr("多说话人，sid %1-%2").arg(info.minSid).arg(info.maxSid);
+                                return info;
+                            }
+                        }
+                    }
                 }
-                if (l.contains(QStringLiteral("zipformer")))
-                    return QObject::tr("Zipformer：流式识别模型（低延迟）。");
-                return QObject::tr("离线语音识别模型（STT）。");
+
+                if (l.contains(QStringLiteral("vits-zh-hf-fanchen-c")))
+                {
+                    info.sidEffective = true;
+                    info.multiSpeaker = true;
+                    info.minSid = 0;
+                    info.maxSid = 186;
+                    info.sidLabel = QObject::tr("多说话人，sid %1-%2").arg(info.minSid).arg(info.maxSid);
+                    return info;
+                }
+                if (l.contains(QStringLiteral("vits-zh-hf-theresa")) || l.contains(QStringLiteral("vits-zh-hf-eula")))
+                {
+                    info.sidEffective = true;
+                    info.multiSpeaker = true;
+                    info.minSid = 0;
+                    info.maxSid = 803;
+                    info.sidLabel = QObject::tr("多说话人，sid %1-%2").arg(info.minSid).arg(info.maxSid);
+                    return info;
+                }
+
+                if (l.contains(QStringLiteral("kokoro-multi-lang")))
+                {
+                    info.sidEffective = false;
+                    info.multiSpeaker = false;
+                    info.minSid = 0;
+                    info.maxSid = 0;
+                    info.sidLabel = QObject::tr("多声线，不使用 sid");
+                    return info;
+                }
+
+                info.sidEffective = false;
+                info.multiSpeaker = false;
+                info.minSid = 0;
+                info.maxSid = 0;
+                info.sidLabel = QObject::tr("单说话人");
+                return info;
             };
-            auto mt = [](const QString& id) -> QString {
+
+            auto mtBase = [](const QString& id) -> QString {
                 const QString s = id.trimmed();
                 if (s.isEmpty())
                     return QObject::tr("自动：在已安装模型中选择一个。");
                 const QString l = s.toLower();
+                if (l.contains(QStringLiteral("kokoro-multi-lang")))
+                    return QObject::tr("Kokoro 多语言模型：中英等多语言，内置 voices.bin（当前未接入声线选择）。");
+                if (l.contains(QStringLiteral("melo-tts-zh_en")) || l.contains(QStringLiteral("zh_en")))
+                    return QObject::tr("中英通用：支持中英文混合输入（词表外英文可能无法发音）。");
+                if (l.contains(QStringLiteral("sherpa-onnx-vits-zh-ll")) || (l.contains(QStringLiteral("vits-zh-ll")) && l.contains(QStringLiteral("sherpa"))))
+                    return QObject::tr("中文：预置多种说话风格（多说话人/多风格，sid=0-4）。");
+                if (l.contains(QStringLiteral("vits-zh-hf-fanchen-c")))
+                    return QObject::tr("中文多说话人：风格丰富（187 人）。");
+                if (l.contains(QStringLiteral("vits-zh-hf-theresa")))
+                    return QObject::tr("中文多说话人：口语感强（804 人）。");
+                if (l.contains(QStringLiteral("vits-zh-hf-eula")))
+                    return QObject::tr("中文多说话人：偏正式/宣传风（804 人）。");
+                if (l.contains(QStringLiteral("vits-icefall-zh-aishell3")) || l.contains(QStringLiteral("aishell3")))
+                    return QObject::tr("中文多说话人：AIShell3 数据集（174 人）。");
+                if (l.contains(QStringLiteral("vits-zh-hf-fanchen-wnj")))
+                    return QObject::tr("中文男声：单说话人男声模型。");
                 if (l.contains(QStringLiteral("zh-baker")))
                     return QObject::tr("中文女声（Baker 1万句数据集）。");
-                if (l.contains(QStringLiteral("ljspeech")) || l.contains(QStringLiteral("en_us-ljspeech")))
-                    return QObject::tr("英文女声（LJSpeech 单人数据集）。");
+                if (l.contains(QStringLiteral("vits-ljs")) || l.contains(QStringLiteral("ljspeech")) || l.contains(QStringLiteral("en_us-ljspeech")))
+                    return QObject::tr("英文女声：经典 LJSpeech。");
                 if (l.contains(QStringLiteral("vctk")))
-                    return QObject::tr("英文多说话人（VCTK，支持 sid 选择说话人）。");
+                    return QObject::tr("英文多说话人：VCTK（109 人）。");
                 if (l.contains(QStringLiteral("piper")))
-                    return QObject::tr("Piper VITS：速度快/体积小（常见为 int8）。");
+                {
+                    if (l.contains(QStringLiteral("lessac")))
+                        return QObject::tr("Piper 美式英文男声（en_US，Lessac，清晰正式）。");
+                    if (l.contains(QStringLiteral("cori")))
+                        return QObject::tr("Piper 英式英文女声（en_GB，Cori）。");
+                    if (l.contains(QStringLiteral("amy")))
+                        return QObject::tr("Piper 英文女声（en_US，Amy，偏温和风格）。");
+                    if (l.contains(QStringLiteral("alan")))
+                        return QObject::tr("Piper 英式英文男声（en_GB，Alan，稳重）。");
+                    if (l.contains(QStringLiteral("southern_english_female")))
+                        return QObject::tr("Piper 英式英文女声（en_GB，Southern English）。");
+                    if (l.contains(QStringLiteral("southern_english_male")))
+                        return QObject::tr("Piper 英式英文男声（en_GB，Southern English）。");
+                    if (l.contains(QStringLiteral("libritts_r")))
+                        return QObject::tr("Piper 美式英文多说话人（en_US，LibriTTS-R，904 人）。");
+                    if (l.contains(QStringLiteral("glados")))
+                        return QObject::tr("Piper 角色音色：GLaDOS 风格（科幻/机械感）。");
+                    return QObject::tr("Piper VITS：体积小/速度快，依赖 espeak-ng-data。");
+                }
                 if (l.contains(QStringLiteral("matcha")))
-                    return QObject::tr("Matcha：自然度更高的合成模型。");
+                    return QObject::tr("Matcha：当前版本未集成（需要额外适配）。");
                 return QObject::tr("离线语音合成模型（TTS）。");
             };
-            if (d->sherpaKwsModelHint && d->sherpaKwsModelCombo)
-                d->sherpaKwsModelHint->setText(mk(d->sherpaKwsModelCombo->currentData().toString()));
-            if (d->sherpaSttModelHint && d->sherpaSttModelCombo)
-                d->sherpaSttModelHint->setText(ms(d->sherpaSttModelCombo->currentData().toString()));
+            const QString modelId = d->sherpaTtsModelCombo ? d->sherpaTtsModelCombo->currentData().toString() : QString();
+            SidInfo sidInfo = loadSidInfo(modelId);
+
+            if (d->ttsSidSpin)
+            {
+                QSignalBlocker b(d->ttsSidSpin);
+                d->ttsSidSpin->setRange(sidInfo.minSid, sidInfo.maxSid);
+                const int v = qBound(sidInfo.minSid, SettingsManager::instance().sherpaTtsSid(), sidInfo.maxSid);
+                d->ttsSidSpin->setValue(v);
+            }
+
+            auto sidTip = [&sidInfo](const QString& id) -> QString {
+                const QString s = id.trimmed();
+                if (s.isEmpty())
+                    return QObject::tr("sid：用于多说话人/多风格模型；单说话人模型会忽略。");
+                if (!sidInfo.sidEffective)
+                    return QObject::tr("sid：此模型不使用 sid。");
+                if (!sidInfo.multiSpeaker)
+                    return QObject::tr("sid：单说话人（忽略 sid）。");
+                return QObject::tr("sid：%1-%2").arg(sidInfo.minSid).arg(sidInfo.maxSid);
+            };
+            auto sidDesc = [&sidInfo](const QString& id, int sid) -> QString {
+                if (sid < 0) sid = 0;
+                const QString s = id.trimmed();
+                if (s.isEmpty())
+                    return QObject::tr("当前 sid=%1：说话人 %1").arg(sid);
+                const QString l = s.toLower();
+                if (l.contains(QStringLiteral("matcha")))
+                    return QObject::tr("当前 sid=%1：Matcha（未集成，sid 无效）").arg(sid);
+                if (!sidInfo.sidEffective)
+                    return QObject::tr("当前 sid=%1：此模型不使用 sid").arg(sid);
+                if (!sidInfo.multiSpeaker)
+                    return QObject::tr("当前 sid=%1：单说话人（忽略 sid）").arg(sid);
+                const QString one = sidInfo.sidDesc.contains(sid) ? sidInfo.sidDesc.value(sid) : QObject::tr("说话人 %1").arg(sid);
+                return QObject::tr("当前 sid=%1：%2").arg(sid).arg(one);
+            };
             if (d->sherpaTtsModelHint && d->sherpaTtsModelCombo)
-                d->sherpaTtsModelHint->setText(mt(d->sherpaTtsModelCombo->currentData().toString()));
+            {
+                const QString base = mtBase(modelId);
+                const QString suffix = sidInfo.sidLabel.isEmpty() ? QString() : (QObject::tr("（%1）").arg(sidInfo.sidLabel));
+                d->sherpaTtsModelHint->setText(base + suffix);
+            }
+            if (d->ttsSidHint && d->sherpaTtsModelCombo)
+                d->ttsSidHint->setText(sidTip(modelId));
+            if (d->ttsSidDesc && d->sherpaTtsModelCombo)
+            {
+                const int sid = d->ttsSidSpin ? d->ttsSidSpin->value() : SettingsManager::instance().sherpaTtsSid();
+                d->ttsSidDesc->setText(sidDesc(modelId, sid));
+            }
         };
         updateSherpaModelHints();
 
         auto emitVoiceChanged = [this]{
             emit offlineVoiceSettingsChanged();
         };
-        connect(d->offlineSttEnabled, &ThemeWidgets::Switch::toggled, this, [this, emitVoiceChanged](bool on){
-            SettingsManager::instance().setOfflineSttEnabled(on);
-            emitVoiceChanged();
-        });
         connect(d->offlineTtsEnabled, &ThemeWidgets::Switch::toggled, this, [this, emitVoiceChanged](bool on){
             SettingsManager::instance().setOfflineTtsEnabled(on);
-            emitVoiceChanged();
-        });
-        connect(d->wakeWordEnabled, &ThemeWidgets::Switch::toggled, this, [this, emitVoiceChanged](bool on){
-            SettingsManager::instance().setWakeWordEnabled(on);
-            emitVoiceChanged();
-        });
-        connect(d->wakeWordText, &QLineEdit::editingFinished, this, [this, emitVoiceChanged]{
-            const QString v = d->wakeWordText ? d->wakeWordText->text().trimmed() : QString();
-            SettingsManager::instance().setWakeWordText(v);
-            emitVoiceChanged();
-        });
-        connect(d->sherpaKwsModelCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, emitVoiceChanged, updateSherpaModelHints](int){
-            const QString v = d->sherpaKwsModelCombo ? d->sherpaKwsModelCombo->currentData().toString() : QString();
-            SettingsManager::instance().setSherpaKwsModel(v);
-            updateSherpaModelHints();
-            emitVoiceChanged();
-        });
-        connect(d->sherpaSttModelCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, emitVoiceChanged, updateSherpaModelHints](int){
-            const QString v = d->sherpaSttModelCombo ? d->sherpaSttModelCombo->currentData().toString() : QString();
-            SettingsManager::instance().setSherpaSttModel(v);
-            updateSherpaModelHints();
             emitVoiceChanged();
         });
         connect(d->sherpaTtsModelCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, emitVoiceChanged, updateSherpaModelHints](int){
             const QString v = d->sherpaTtsModelCombo ? d->sherpaTtsModelCombo->currentData().toString() : QString();
             SettingsManager::instance().setSherpaTtsModel(v);
+            updateSherpaModelHints();
+            emitVoiceChanged();
+        });
+        connect(d->ttsSidSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this, emitVoiceChanged, updateSherpaModelHints](int sid){
+            SettingsManager::instance().setSherpaTtsSid(sid);
             updateSherpaModelHints();
             emitVoiceChanged();
         });

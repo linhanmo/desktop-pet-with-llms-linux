@@ -223,7 +223,7 @@ QSharedPointer<Model> ModelLoader::loadModel(const QString &model3JsonPath) {
 
                 auto groups = pobj.value("Groups").toArray();
                 for (const auto &gAny : groups) {
-                    PoseGroup g;
+                    ModelPoseGroup g;
                     auto arr = gAny.toArray();
                     for (const auto &entryAny : arr) {
                         auto eobj = entryAny.toObject();

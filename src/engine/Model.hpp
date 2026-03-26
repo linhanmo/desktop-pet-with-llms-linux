@@ -35,11 +35,11 @@ struct PoseEntry {
     int parameterIndex{-1}; // 虚拟参数索引（与部件ID同名的参数），用于依据动态判断显示部件
     QVector<int> linkPartIndices; // 与该部件联动的其它部件
 };
-struct PoseGroup {
+struct ModelPoseGroup {
     QVector<PoseEntry> entries; // 同组互斥的部件
 };
 struct PoseDef {
-    QVector<PoseGroup> groups;
+    QVector<ModelPoseGroup> groups;
     float fadeInTime{0.5f};
     bool valid{false};
 };

@@ -93,28 +93,16 @@ public:
     void setChatBubbleStyle(const QString& styleId);
 
     // ---- Offline voice (Sherpa-onnx, stored in global config.json) ----
-    bool offlineSttEnabled() const;
-    void setOfflineSttEnabled(bool v);
     bool offlineTtsEnabled() const;
     void setOfflineTtsEnabled(bool v);
-    bool wakeWordEnabled() const;
-    void setWakeWordEnabled(bool v);
     QString sherpaOnnxBinDir() const;
     void setSherpaOnnxBinDir(const QString& dir);
-    QString wakeWordText() const;
-    void setWakeWordText(const QString& text);
-    QString sherpaKwsModel() const;
-    void setSherpaKwsModel(const QString& modelId);
-    QString sherpaSttModel() const;
-    void setSherpaSttModel(const QString& modelId);
     QString sherpaTtsModel() const;
     void setSherpaTtsModel(const QString& modelId);
-    QString sherpaKwsArgs() const;
-    void setSherpaKwsArgs(const QString& args);
-    QString sherpaSttArgs() const;
-    void setSherpaSttArgs(const QString& args);
     QString sherpaTtsArgs() const;
     void setSherpaTtsArgs(const QString& args);
+    int sherpaTtsSid() const;
+    void setSherpaTtsSid(int sid);
     int ttsVolumePercent() const;
     void setTtsVolumePercent(int v);
 
@@ -174,17 +162,11 @@ private:
     QString m_chatBubbleStyle{QStringLiteral("Era")};
 
     // Offline voice
-    bool m_offlineSttEnabled{false};
     bool m_offlineTtsEnabled{false};
-    bool m_wakeWordEnabled{false};
     QString m_sherpaOnnxBinDir;
-    QString m_wakeWordText{QStringLiteral("小墨")};
-    QString m_sherpaKwsModel;
-    QString m_sherpaSttModel;
     QString m_sherpaTtsModel;
-    QString m_sherpaKwsArgs;
-    QString m_sherpaSttArgs;
     QString m_sherpaTtsArgs;
+    int m_sherpaTtsSid{0};
     int m_ttsVolumePercent{80};
 
     QJsonArray m_reminderTasks;

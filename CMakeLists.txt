@@ -235,7 +235,68 @@ if(NOT CMAKE_PREFIX_PATH)
         endif()
     endforeach()
 endif()
+
+# Try to auto-discover a typical Qt6 installation on Windows if not provided
+if(WIN32 AND NOT Qt6_DIR)
+    set(_QT_CANDIDATE_ROOTS "C:/Qt")
+    if(EXISTS "E:/qt")
+        list(APPEND _QT_CANDIDATE_ROOTS "E:/qt")
+    endif()
+    if(DEFINED ENV{ProgramFiles})
+        list(APPEND _QT_CANDIDATE_ROOTS "$ENV{ProgramFiles}/Qt")
+    endif()
+    if(DEFINED ENV{ProgramFiles\(x86\)})
+        list(APPEND _QT_CANDIDATE_ROOTS "$ENV{ProgramFiles\(x86\)}/Qt")
+    endif()
+    foreach(_qt_root IN LISTS _QT_CANDIDATE_ROOTS)
+        if(EXISTS "${_qt_root}")
+            file(GLOB _qt_versions "${_qt_root}/6.*")
+            foreach(_qt_ver_dir IN LISTS _qt_versions)
+                set(_qt_toolchains)
+                if(MSVC)
+                    file(GLOB _qt_toolchains "${_qt_ver_dir}/msvc*")
+                elseif(MINGW)
+                    file(GLOB _qt_toolchains "${_qt_ver_dir}/mingw*")
+                else()
+                    file(GLOB _qt_toolchains
+                        "${_qt_ver_dir}/msvc*"
+                        "${_qt_ver_dir}/mingw*"
+                    )
+                endif()
+                foreach(_qt_tc IN LISTS _qt_toolchains)
+                    if(EXISTS "${_qt_tc}/lib/cmake/Qt6")
+                        set(Qt6_DIR "${_qt_tc}/lib/cmake/Qt6")
+                        list(APPEND CMAKE_PREFIX_PATH "${_qt_tc}")
+                        break()
+                    endif()
+                endforeach()
+                if(Qt6_DIR)
+                    break()
+                endif()
+            endforeach()
+        endif()
+        if(Qt6_DIR)
+            break()
+        endif()
+    endforeach()
+    if(Qt6_DIR)
+        message(STATUS "Detected Qt6_DIR: ${Qt6_DIR}")
+    else()
+        message(STATUS "Qt6 auto-discovery did not find a local installation; please set Qt6_DIR or CMAKE_PREFIX_PATH.")
+    endif()
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Svg Multimedia)
+
+if(MSVC AND (Qt6_DIR MATCHES "mingw" OR Qt6Core_DIR MATCHES "mingw"))
+    message(FATAL_ERROR
+        "Qt toolchain mismatch: MSVC build detected but Qt appears to be a MinGW build.\n"
+        "Please install the MSVC Qt kit (e.g. 6.x.x\\msvc2022_64) and set Qt6_DIR to:\n"
+        "  <Qt>\\6.x.x\\msvc2022_64\\lib\\cmake\\Qt6\n"
+        "Current Qt6_DIR='${Qt6_DIR}'\n"
+        "Current Qt6Core_DIR='${Qt6Core_DIR}'"
+    )
+endif()
 
 # Live2D Cubism Core SDK
 set(CUBISM_SDK_DIR "${CMAKE_SOURCE_DIR}/sdk/cubism")
@@ -506,7 +567,9 @@ target_link_libraries(XiaoMo PRIVATE Qt6::Multimedia)
 target_compile_definitions(XiaoMo PRIVATE AMAIGIRL_USE_QT_MULTIMEDIA=1)
 
 if(WIN32)
-    target_link_libraries(XiaoMo PRIVATE dwmapi)
+    target_link_libraries(XiaoMo PRIVATE dwmapi windowsapp)
+
+    set(_AMAIGIRL_SHERPA_ROOT "${CMAKE_SOURCE_DIR}/res/voice_deps/sherpa-onnx-v1.12.10-win-x64-shared")
 endif()
 
 # macOS specifics
@@ -705,12 +768,24 @@ if(WIN32 AND AMAIGIRL_ENABLE_WINDEPLOYQT)
             endif()
         endforeach()
 
+        set(_AMAIGIRL_SHERPA_COPY_COMMANDS)
+        if(_AMAIGIRL_SHERPA_ROOT AND EXISTS "${_AMAIGIRL_SHERPA_ROOT}/lib/sherpa-onnx-cxx-api.dll")
+            list(APPEND _AMAIGIRL_SHERPA_COPY_COMMANDS
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_AMAIGIRL_SHERPA_ROOT}/lib/onnxruntime.dll" "${AMAIGIRL_WINDOWS_STAGE_DIR}/onnxruntime.dll"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_AMAIGIRL_SHERPA_ROOT}/lib/onnxruntime_providers_shared.dll" "${AMAIGIRL_WINDOWS_STAGE_DIR}/onnxruntime_providers_shared.dll"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_AMAIGIRL_SHERPA_ROOT}/lib/sherpa-onnx-c-api.dll" "${AMAIGIRL_WINDOWS_STAGE_DIR}/sherpa-onnx-c-api.dll"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_AMAIGIRL_SHERPA_ROOT}/lib/sherpa-onnx-cxx-api.dll" "${AMAIGIRL_WINDOWS_STAGE_DIR}/sherpa-onnx-cxx-api.dll"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_AMAIGIRL_SHERPA_ROOT}/lib/cargs.dll" "${AMAIGIRL_WINDOWS_STAGE_DIR}/cargs.dll"
+            )
+        endif()
+
         add_custom_target(package_windows
             COMMAND ${CMAKE_COMMAND} -E rm -rf "${AMAIGIRL_WINDOWS_STAGE_DIR}"
             COMMAND ${CMAKE_COMMAND} -E rm -f "${AMAIGIRL_WINDOWS_PACKAGE_ZIP}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${AMAIGIRL_WINDOWS_STAGE_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:XiaoMo>" "${AMAIGIRL_WINDOWS_STAGE_DIR}/XiaoMo.exe"
             COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/res" "${AMAIGIRL_WINDOWS_STAGE_DIR}/res"
+            ${_AMAIGIRL_SHERPA_COPY_COMMANDS}
             ${_AMAIGIRL_QT_COPY_COMMANDS}
                 ${_AMAIGIRL_PACKAGE_WINDOWS_REDIST_COMMANDS}
             COMMAND ${CMAKE_COMMAND} -E tar cf "${AMAIGIRL_WINDOWS_PACKAGE_ZIP}" --format=zip "XiaoMo"
@@ -815,6 +890,22 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_SOURCE_DIR}/res" "$<TARGET_FILE_DIR:XiaoMo>/res"
         COMMENT "Copying resources to output directory"
+    )
+endif()
+
+if(WIN32 AND _AMAIGIRL_SHERPA_ROOT AND EXISTS "${_AMAIGIRL_SHERPA_ROOT}/lib/sherpa-onnx-cxx-api.dll")
+    add_custom_command(TARGET XiaoMo POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_AMAIGIRL_SHERPA_ROOT}/lib/onnxruntime.dll" "$<TARGET_FILE_DIR:XiaoMo>/onnxruntime.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_AMAIGIRL_SHERPA_ROOT}/lib/onnxruntime_providers_shared.dll" "$<TARGET_FILE_DIR:XiaoMo>/onnxruntime_providers_shared.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_AMAIGIRL_SHERPA_ROOT}/lib/sherpa-onnx-c-api.dll" "$<TARGET_FILE_DIR:XiaoMo>/sherpa-onnx-c-api.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_AMAIGIRL_SHERPA_ROOT}/lib/sherpa-onnx-cxx-api.dll" "$<TARGET_FILE_DIR:XiaoMo>/sherpa-onnx-cxx-api.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_AMAIGIRL_SHERPA_ROOT}/lib/cargs.dll" "$<TARGET_FILE_DIR:XiaoMo>/cargs.dll"
+        COMMENT "Copying sherpa-onnx runtime DLLs"
     )
 endif()
 
