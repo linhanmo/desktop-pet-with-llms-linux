@@ -12,8 +12,8 @@ function Need($name,$test,$install){if(-not (& $test)){Write-Host "install:$name
 function Test-Cmd($n){$p=(Get-Command $n -ErrorAction SilentlyContinue);$null -ne $p}
 function WingetInstall($id,$override){$cmd="winget install --id `"$id`" --silent --accept-package-agreements --accept-source-agreements";if($override){$cmd+=" --override `"$override`""};Exec $cmd}
 function Fetch($url,$to){Write-Host "GET $url -> $to"; Invoke-WebRequest -Uri $url -OutFile $to -UseBasicParsing}
-function Join-Parts($pattern,$to){
-  $files = Get-ChildItem -File -Filter $pattern | Sort-Object Name
+function Join-Parts($dir,$pattern,$to){
+  $files = Get-ChildItem -Path $dir -File -Filter $pattern | Sort-Object Name
   if(-not $files){throw "no parts matched: $pattern"}
   $bytes = $files | Get-Content -Encoding Byte -ReadCount 0
   $bytes | Set-Content -Encoding Byte -Path $to
@@ -51,7 +51,7 @@ if($Mode -eq 'Full'){
       }
     }
     if($downloaded.Count -lt 1){ throw "no parts downloaded" }
-    Join-Parts "XiaoMo-windows.zip.part*" (Join-Path $work "XiaoMo-windows.zip")
+    Join-Parts $work "XiaoMo-windows.zip.part*" (Join-Path $work "XiaoMo-windows.zip")
     $outDir = Join-Path $InstallRoot "XiaoMo"
     if(Test-Path $outDir){Remove-Item -Recurse -Force $outDir}
     Expand-Archive -LiteralPath (Join-Path $work "XiaoMo-windows.zip") -DestinationPath $outDir -Force
@@ -99,7 +99,7 @@ Fetch "$AssetBase/cubism.zip" (Join-Path $AssetsOut "cubism.zip")
 Fetch "$AssetBase/models.zip" (Join-Path $AssetsOut "models.zip")
 Fetch "$AssetBase/voice_deps.zip.part001" (Join-Path $AssetsOut "voice_deps.zip.part001")
 Fetch "$AssetBase/voice_deps.zip.part002" (Join-Path $AssetsOut "voice_deps.zip.part002")
-Join-Parts "voice_deps.zip.part*" (Join-Path $AssetsOut "voice_deps.zip")
+Join-Parts $AssetsOut "voice_deps.zip.part*" (Join-Path $AssetsOut "voice_deps.zip")
 # 小体量 LLM（可选；7B original 请手动下载以节省流量）
 foreach($f in @(
   "llm-1.5B-anime.zip","llm-1.5B-original.zip","llm-1.5B-universal.zip",
@@ -112,6 +112,7 @@ Expand-Archive -LiteralPath (Join-Path $AssetsOut "cubism.zip") -DestinationPath
 Rename-Item -Path (Join-Path $PetDir "sdk\cubism*") -NewName "cubism" -ErrorAction SilentlyContinue
 Expand-Archive -LiteralPath (Join-Path $AssetsOut "models.zip") -DestinationPath (Join-Path $PetDir "res") -Force
 Expand-Archive -LiteralPath (Join-Path $AssetsOut "voice_deps.zip") -DestinationPath (Join-Path $PetDir "res") -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $PetDir "res\llm") | Out-Null
 foreach($f in Get-ChildItem $AssetsOut -Filter "llm-*.zip"){
   Expand-Archive -LiteralPath $f.FullName -DestinationPath (Join-Path $PetDir "res\llm") -Force
 }
