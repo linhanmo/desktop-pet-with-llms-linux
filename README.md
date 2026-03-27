@@ -20,46 +20,27 @@
 
 ## 环境要求（从源码构建）
 - Git、CMake、Visual Studio 2022 Build Tools（含 VC 工具链）。
-- Miniconda（用于获取 Qt6）：脚本会创建 qt6env 并安装 qt6-main、ninja。
-- Windows PowerShell + winget（脚本会自动安装缺失依赖）。
+- Miniconda（用于获取 Qt6）：建议创建 qt6env 并安装 qt6-main、ninja。
+- Windows PowerShell + winget（可选）：用于安装缺失依赖。
 
 
 ## 获取与运行
-你可以选择三种方式部署/运行：
+本项目采用 **build-msvc.zip 分卷**发布：下载后解压即可运行，无需额外安装与脚本。
 
-1) 便携包（推荐上手）
-- 下载 Release 中的 XiaoMo_Portable.zip
-- 解压后直接运行 XiaoMo.exe
-- 如需本地 LLM 或离线语音，请另外下载对应资源包并解压到 res 子目录
+1) 下载
+- 下载 Release 中的 `build-msvc.zip.001` ~ `build-msvc.zip.012`（必须全部下载到同一目录）
 
-2) 全量包（包含全部离线资源）
-- 下载 XiaoMo-windows.zip.part001 ~ XiaoMo-windows.zip.part00N 全部分片
-- 在同一目录合并：
-  - Windows: `copy /b XiaoMo-windows.zip.part001+...+XiaoMo-windows.zip.part00N XiaoMo-windows.zip`
-- 解压 XiaoMo-windows.zip 后运行 XiaoMo.exe
+2) 解压
+- 安装 7-Zip（推荐）后，在该目录执行：
 
-3) MSIX 最小包（仅最小运行时）
-- 下载 XiaoMo_Minimal.msix 并安装（需要开发者模式或签名）
-- 将需要的离线资源解压到安装目录的 res 子目录（结构见下文“资源与目录约定”）
+```cmd
+7z x build-msvc.zip.001
+```
 
+或在资源管理器里右键 `build-msvc.zip.001` → 7-Zip → 解压。
 
-## 一键脚本（下载/合并/构建）
-仓库提供 PowerShell 脚本 scripts/install_and_build.ps1：
-
-- 便携包部署：
-  - `powershell -ExecutionPolicy Bypass -File scripts\install_and_build.ps1 -Mode Portable`
-- 全量包（脚本自动探测分片并合并）：
-  - `powershell -ExecutionPolicy Bypass -File scripts\install_and_build.ps1 -Mode Full`
-- 从源码构建（自动准备 Qt6 与资源、构建并可运行）：
-  - `powershell -ExecutionPolicy Bypass -File scripts\install_and_build.ps1 -Mode Source`
-- 可选参数：
-  - `-InstallRoot` 指定安装/工作目录（默认：`%USERPROFILE%\XiaoMo`）
-  - `-RunApp` 完成后自动运行应用
-
-脚本要点：
-- 启用 TLS1.2 下载，兼容更多网络环境。
-- Full 模式自动遍历分片（part001..part020），合并无须手动数分片。
-- Source 模式会下载 cubism、models、voice_deps 分片并解压到 Pet/res。
+3) 运行
+- 解压完成后，直接运行 `XiaoMo.exe`
 
 
 ## 资源与目录约定
@@ -158,40 +139,20 @@ Live2D 模型（res/models）：
   - 确认 `res/voice_deps/models` 下存在模型子目录，且包含模型/配置文件；启用“离线 TTS”。
   - 多说话人模型需正确的说话人映射文件（如 speakers.txt 或 JSON 映射）。
 - 合并/解压失败
-  - 确认所有分片已经完整下载并位于同一目录；合并命令按顺序拼接；压缩包解压到对应目录。
-- 脚本执行被阻止
-  - 以管理员打开 PowerShell 或使用 `-ExecutionPolicy Bypass` 临时放行。
-- MSIX 安装失败
-  - 启用开发者模式或使用受信任证书对包进行签名。
+  - 确认 `build-msvc.zip.001`~`.012` 全部下载完成并位于同一目录；用 7-Zip 从 `.001` 开始解压。
 
 
 ## 示例命令（速查）
 
-- 临时放行脚本执行（仅当前 PowerShell 会话）
-
-```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force
-```
-
-- 脚本一键部署/构建
-
-```powershell
-# 便携包到自定义目录并自动运行
-powershell -ExecutionPolicy Bypass -File scripts\install_and_build.ps1 -Mode Portable -InstallRoot "D:\XiaoMo" -RunApp
-
-# 全量包（自动探测并合并分片）
-powershell -ExecutionPolicy Bypass -File scripts\install_and_build.ps1 -Mode Full -InstallRoot "D:\XiaoMo"
-
-# 从源码构建（自动准备 Qt6 与资源）
-powershell -ExecutionPolicy Bypass -File scripts\install_and_build.ps1 -Mode Source -InstallRoot "D:\XiaoMo" -RunApp
-```
-
-- 分卷合并（手动）
+- 解压 build-msvc 分卷
 
 ```cmd
-:: 合并全量包
-copy /b XiaoMo-windows.zip.part001+XiaoMo-windows.zip.part002+...+XiaoMo-windows.zip.part00N XiaoMo-windows.zip
+7z x build-msvc.zip.001
+```
 
+- 分卷合并（可选资源手动）
+
+```cmd
 :: 合并离线语音依赖
 copy /b voice_deps.zip.part001+voice_deps.zip.part002 voice_deps.zip
 
@@ -214,8 +175,8 @@ Get-ChildItem .\assets -Filter "llm-*.zip" | % { Expand-Archive -LiteralPath $_.
 - 指定 LLM 运行器与模型（环境变量覆盖）
 
 ```powershell
-$env:LLAMA_RUNNER = "E:\XiaoMo\portable\res\bin\llama-cli.exe"
-$env:LLM_MODEL    = "E:\XiaoMo\portable\res\llm\1.5B\your-model.gguf"
+$env:LLAMA_RUNNER = "E:\XiaoMo\res\bin\llama-cli.exe"
+$env:LLM_MODEL    = "E:\XiaoMo\res\llm\1.5B\your-model.gguf"
 # 运行 XiaoMo.exe 后将使用以上设置；关闭 PowerShell 该设置失效
 ```
 
@@ -225,7 +186,7 @@ $env:LLM_MODEL    = "E:\XiaoMo\portable\res\llm\1.5B\your-model.gguf"
 .\res\bin\llama-cli.exe -m .\res\llm\1.5B\your-model.gguf -p "你好" --simple-io -n 64
 ```
 
-- 手动安装构建依赖（可选，脚本会自动安装）
+- 手动安装构建依赖（可选）
 
 ```powershell
 winget install --id Git.Git -e --accept-package-agreements --accept-source-agreements
@@ -249,3 +210,12 @@ conda create -y -n qt6env -c conda-forge qt6-main ninja
 
 ## 许可证与致谢
 - 本项目使用的第三方组件与模型版权归其各自所有者所有。Live2D 模型和语音模型请遵循其对应授权协议。
+
+
+## 开发者信息与测试人员致谢
+- 开发者：Mo 
+- 测试人员：guos7898-alt , xpresent-10
+
+万分感谢所有测试人员的反馈与建议，他们帮助我全面优化了项目的核心性能与运行稳定性，打磨并提升了产品全链路的使用体验，更精准排查定位了多处潜在的程序缺陷与风险隐患，为项目的顺利落地与长期平稳运行筑牢了坚实根基。
+
+百度网盘链接: https://pan.baidu.com/s/13QY8_rEd1pWLyFOL9JsFVQ?pwd=8888 提取码: 8888
