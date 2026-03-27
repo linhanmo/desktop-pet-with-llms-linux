@@ -6,6 +6,7 @@ param(
   [switch]$RunApp
 )
 $ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 function Exec($c){Write-Host $c; & powershell -NoLogo -NoProfile -Command $c}
 function Need($name,$test,$install){if(-not (& $test)){Write-Host "install:$name"; & $install}}
 function Test-Cmd($n){$p=(Get-Command $n -ErrorAction SilentlyContinue);$null -ne $p}
@@ -38,8 +39,18 @@ if($Mode -eq 'Full'){
   New-Item -ItemType Directory -Force -Path $work | Out-Null
   Push-Location $work
   try{
-    $parts = @("XiaoMo-windows.zip.part001","XiaoMo-windows.zip.part002","XiaoMo-windows.zip.part003")
-    foreach($p in $parts){ Fetch "$AssetBase/$p" (Join-Path $work $p) }
+    $downloaded = @()
+    for($i=1; $i -le 20; $i++){
+      $p = ("XiaoMo-windows.zip.part{0:D3}" -f $i)
+      try{
+        Fetch "$AssetBase/$p" (Join-Path $work $p)
+        $downloaded += $p
+      } catch {
+        if($i -eq 1){ throw }
+        break
+      }
+    }
+    if($downloaded.Count -lt 1){ throw "no parts downloaded" }
     Join-Parts "XiaoMo-windows.zip.part*" (Join-Path $work "XiaoMo-windows.zip")
     $outDir = Join-Path $InstallRoot "XiaoMo"
     if(Test-Path $outDir){Remove-Item -Recurse -Force $outDir}
