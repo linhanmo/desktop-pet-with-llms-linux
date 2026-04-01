@@ -11,31 +11,20 @@
 - 多语言与主题：支持简体中文、英文与主题切换；配置与对话历史持久化存储。
 
 ## 环境要求（运行）
-- Windows 10/11（x64）：建议安装 7-Zip（用于解压 build-msvc 分卷）
 - Ubuntu 22.04（x64）：支持 X11 / Wayland（无可用 Wayland display 时会自动回退到 xcb）
 
 ## 环境要求（从源码构建）
-- Git、CMake、Visual Studio 2022 Build Tools（含 VC 工具链）
-- Miniconda（用于获取 Qt6）：建议创建 qt6env 并安装 qt6-main、ninja
-- Windows PowerShell + winget（可选）：用于安装缺失依赖
+- Git、CMake、Ninja、GCC/G++
+- 无需 conda：Qt6 与必要头文件通过仓库内 `sdk/` 目录提供（用于可复现构建）
 
 ## 下载与运行（解压即用）
-本项目提供 Windows 与 Linux 的分卷包：下载后解压即可运行。
+本仓库仅发布 Linux 版本：下载后解压即可运行。
 
 1) 下载
-- Windows：下载 Release 中的 `build-msvc.zip.001` ~ `build-msvc.zip.012`（必须全部下载到同一目录）
-- Linux：下载 Release 中的 `build-linux.zip.001` ~ `build-linux.zip.023`（必须全部下载到同一目录）
+- 下载 Release 中的 `build-linux.zip.001` ~ `build-linux.zip.023`（必须全部下载到同一目录）
 
 2) 解压
-- Windows（7-Zip，推荐）：
-
-```cmd
-7z x build-msvc.zip.001
-```
-
-或在资源管理器里右键 `build-msvc.zip.001` → 7-Zip → 解压。
-
-- Linux（两种方式任选其一）：
+- 两种方式任选其一：
 
 ```bash
 cat build-linux.zip.* > build-linux.zip
@@ -49,28 +38,16 @@ unzip build-linux.zip
 ```
 
 3) 运行
-- 解压完成后，进入 `release/` 目录，运行 `XiaoMo.exe`
-- Linux：解压完成后进入 `build-linux/portable-dist/`，运行 `./XiaoMo`
+- 解压完成后进入 `build-linux/portable-dist/`，运行 `./XiaoMo`
 
 ## 资源与目录约定
-应用运行时查找资源的根目录为 `release/` 目录下的 `res/`。
+应用运行时查找资源的根目录为可执行文件同目录下的 `res/`。
 
-`cubism.zip` 解压后的 **Cubism SDK 放在 `sdk/` 下**（用于从源码构建或资源更新场景），不放在 `res/` 下。
+`cubism.zip` 解压后的 Cubism SDK 放在仓库的 `sdk/` 下（用于从源码构建），不放在 `portable-dist/res/` 下。
 
 目录示例：
 
-```
-release/
-  XiaoMo.exe
-  res/
-    bin/            # 包含 llama-cli.exe/llama.exe 等运行器（用于本地 LLM）
-    llm/            # 本地 LLM 模型（*.gguf）
-    models/         # Live2D 模型集合（每个子目录一个模型）
-    voice_deps/     # 离线语音模型与依赖（sherpa-onnx 等）
-    i18n/, icons/   # 语言与图标资源
-sdk/
-  cubism/         # Cubism SDK（由 cubism.zip 解压得到）
-
+```text
 build-linux/
   portable-dist/
     XiaoMo
@@ -78,16 +55,19 @@ build-linux/
     plugins/
     qt.conf
     res/
-      bin/
-      llm/
-      models/
-      voice_deps/
+      bin/            # llama-cli 等运行器（用于本地 LLM）
+      llm/            # 本地 LLM 模型（*.gguf）
+      models/         # Live2D 模型集合（每个子目录一个模型）
+      voice_deps/     # 离线语音模型与依赖（sherpa-onnx 等）
+      i18n/, icons/   # 语言与图标资源
+sdk/
+  cubism/             # Cubism SDK（由 cubism.zip 解压得到，用于从源码构建）
 ```
 
 Live2D 模型（`res/models/`）：
 - 每个模型放在独立文件夹，如 `res/models/<模型名>/`
 - 模型文件优先匹配 `*.model3.json`，若无则尝试 `*.model.json`，否则回退 `model3.json/model.json/index.json`
-- 默认模型根目录（设置中可改）：`文档\\XiaoMo\\Models`，首次运行会自动使用其中的第一个模型
+- 默认模型根目录（设置中可改）：`~/Documents/XiaoMo/Models`，首次运行会自动使用其中的第一个模型
 
 本地 LLM 模型（`res/llm/`）：
 - 将 gguf 文件放入 `res/llm/1.5B/` 或 `res/llm/7B/`（可不分文件夹，程序会自动匹配）
@@ -137,24 +117,34 @@ Live2D 模型（`res/models/`）：
 - 定时任务：支持每天固定时间或按间隔触发的本地提醒
 
 ## 从源码构建（手动步骤概览）
-参考以下手动流程（简版）：
+参考以下流程（简版，非 conda 环境）：
 
-1) 获取依赖
-- 安装 Git、CMake、VS 2022 Build Tools（含 VC 工具链）
-- 安装 Miniconda 并创建环境：`conda create -y -n qt6env -c conda-forge qt6-main ninja`
+1) 获取依赖（系统侧）
+- Git、CMake、Ninja、GCC/G++
 
-2) 拉取与配置
-- 克隆仓库：`git clone https://github.com/linhanmo/desktop-pet-with-llms-linux.git`
-- 准备 Qt6：找到 `Qt6_DIR` 与 `CMAKE_PREFIX_PATH`（通常在 `envs/qt6env/Library/lib/cmake/Qt6` 与 `envs/qt6env/Library`）
+2) 配置与构建（示例参数）
 
-3) CMake 构建
-- 生成：`cmake -S Pet -B Pet/build -G "Visual Studio 17 2022" -A x64 -DQt6_DIR=... -DCMAKE_PREFIX_PATH=...`
-- 编译：`cmake --build Pet/build --config Release -j 8`
-- 部署：使用 `windeployqt6.exe` 收集运行所需 DLL 到可执行目录
+```bash
+unset CONDA_PREFIX CONDA_DEFAULT_ENV
+export PATH=/home/lin/desktoppet/Pet/sdk/qt6_apt/usr/lib/qt6/bin:/home/lin/desktoppet/Pet/sdk/qt6_apt/usr/bin:/usr/bin:/bin
 
-4) 放置资源
-- `cubism.zip` 解压到 `Pet/sdk/` 下，确保最终为 `Pet/sdk/cubism/`
-- `models.zip`、`voice_deps.zip.*`、`llm.zip.*` 解压/放置到 `Pet/res/` 下（详见“资源与目录约定”）
+cmake -S /home/lin/desktoppet/Pet -B /home/lin/desktoppet/Pet/build-linux -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+  -DQt6_DIR=/home/lin/desktoppet/Pet/sdk/qt6_apt/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
+  -DCMAKE_PREFIX_PATH=/home/lin/desktoppet/Pet/sdk/qt6_apt/usr \
+  -DOPENGL_INCLUDE_DIR=/home/lin/desktoppet/Pet/sdk/linux_headers/usr/include \
+  -DOPENGL_opengl_LIBRARY=/usr/lib/x86_64-linux-gnu/libOpenGL.so.0.0.0 \
+  -DOPENGL_glx_LIBRARY=/usr/lib/x86_64-linux-gnu/libGLX.so.0.0.0 \
+  -DOPENGL_gl_LIBRARY=/usr/lib/x86_64-linux-gnu/libGL.so.1.7.0 \
+  -DAMAIGIRL_FETCH_LLAMA_CPP=ON \
+  -DAMAIGIRL_ENABLE_PORTABLE_LINUX_BUNDLE=ON \
+  -DAMAIGIRL_QMAKE_EXECUTABLE=/home/lin/desktoppet/Pet/sdk/qt6_apt/usr/lib/qt6/bin/qmake6 \
+  -DAMAIGIRL_ENABLE_LIVE2D=ON \
+  -DAMAIGIRL_CUBISM_SDK_DIR=/home/lin/desktoppet/Pet/sdk/cubism/CubismSdkForNative-5-r.4.1/Core
+
+cmake --build /home/lin/desktoppet/Pet/build-linux -j 8 --target install_portable
+```
 
 ## 常见问题
 - 运行后无对话/回复很短
@@ -167,48 +157,29 @@ Live2D 模型（`res/models/`）：
   - 确认所有分卷已完整下载并位于同一目录；用 7-Zip 从 `.001` 开始解压
 
 ## 示例命令（速查）
-- 解压 build-msvc 分卷
+- 解压 build-linux 分卷
 
-```cmd
-7z x build-msvc.zip.001
-```
-
-- 解压可选资源（分卷从 .001 开始解压）
-
-```cmd
-7z x voice_deps.zip.001
-7z x llm.zip.001
-7z x models.zip
-```
-
-- 将资源解压到正确位置（示例：在仓库 Pet 目录）
-
-```powershell
-Expand-Archive -LiteralPath .\assets\cubism.zip -DestinationPath .\sdk -Force
-Rename-Item -Path .\sdk\cubism* -NewName cubism -ErrorAction SilentlyContinue
-Expand-Archive -LiteralPath .\assets\models.zip -DestinationPath .\res -Force
-7z x .\assets\voice_deps.zip.001 -o.\res -y
-New-Item -ItemType Directory -Force -Path .\res\llm | Out-Null
-7z x .\assets\llm.zip.001 -o.\res\llm -y
+```bash
+cat build-linux.zip.* > build-linux.zip
+unzip build-linux.zip
 ```
 
 - 指定 LLM 运行器与模型（环境变量覆盖）
 
-```powershell
-$env:LLAMA_RUNNER = "E:\XiaoMo\release\res\bin\llama-cli.exe"
-$env:LLM_MODEL    = "E:\XiaoMo\release\res\llm\1.5B\your-model.gguf"
+```bash
+export LLAMA_RUNNER="$PWD/build-linux/portable-dist/res/bin/llama-cli"
+export LLM_MODEL="$PWD/build-linux/portable-dist/res/llm/1.5B/your-model.gguf"
 ```
 
-- llama-cli 快速自检（在 `release/` 目录执行）
+- llama-cli 快速自检
 
-```powershell
-.\res\bin\llama-cli.exe -m .\res\llm\1.5B\your-model.gguf -p "你好" --simple-io -n 64
+```bash
+"$LLAMA_RUNNER" -m "$LLM_MODEL" -p "你好" --simple-io -n 64
 ```
 
 ## 配置与日志路径
-- 配置目录（Windows）：`%APPDATA%\IAIAYN\XiaoMo\Configs\config.json`
-- 本地数据目录（Windows）：`%LOCALAPPDATA%\IAIAYN\XiaoMo`
-- 启动日志：`%LOCALAPPDATA%\...\logs\startup.log`
+- 配置/本地数据目录（Linux）：`~/.local/share/IAIAYN/XiaoMo`
+- 启动日志：`~/.local/share/IAIAYN/XiaoMo/logs/startup.log`
 
 ## 许可证与致谢
 - 本项目使用的第三方组件与模型版权归其各自所有者所有。Live2D 模型和语音模型请遵循其对应授权协议。
@@ -218,5 +189,3 @@ $env:LLM_MODEL    = "E:\XiaoMo\release\res\llm\1.5B\your-model.gguf"
 - 测试人员：guos7898-alt , xpresent-10
 
 万分感谢所有测试人员的反馈与建议，他们帮助我全面优化了项目的核心性能与运行稳定性，打磨并提升了产品全链路的使用体验，更精准排查定位了多处潜在的程序缺陷与风险隐患，为项目的顺利落地与长期平稳运行筑牢了坚实根基。
-
-百度网盘链接: https://pan.baidu.com/s/13QY8_rEd1pWLyFOL9JsFVQ?pwd=8888 提取码: 8888
