@@ -2,6 +2,10 @@
 
 一款基于 Qt + Live2D 的桌面宠物应用，支持本地离线 LLM 对话与离线 TTS（文字转语音），提供托盘菜单与全局快捷键，解压即用或从源码构建。
 
+Windows 版本仓库：https://github.com/linhanmo/desktop-pet-with-llms
+
+百度网盘下载（Linux 发行包镜像）：https://pan.baidu.com/s/1WRFEQnkCwDNUeBRuVNEf0A?pwd=8888
+
 ## 功能概览
 - Live2D 看板娘：支持呼吸、眨眼、视线跟随、物理模拟（头发/衣物摆动），可设置屏幕显示、透明背景、全局置顶等。
 - 本地离线 LLM 对话：内置 llama.cpp CLI 调用，支持 1.5B/7B 规模，风格可选 Original/Universal/Anime，System Prompt 可自定义。
