@@ -67,6 +67,30 @@ def _curl_json(method: str, url: str, auth: str, body: dict | None = None, timeo
     return json.loads(p.stdout)
 
 
+def _curl_no_output(method: str, url: str, auth: str, timeout_s: int = 60) -> None:
+    cmd = [
+        "curl",
+        "-sS",
+        "--fail-with-body",
+        "--connect-timeout",
+        "30",
+        "--max-time",
+        str(timeout_s),
+        "-X",
+        method,
+        "-H",
+        "Accept: application/vnd.github+json",
+        "-H",
+        "User-Agent: desktop-pet-with-llms-linux-release-uploader",
+        "-H",
+        f"Authorization: {auth}",
+        url,
+    ]
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr.strip() or p.stdout.strip() or f"curl failed: {method} {url}")
+
+
 def _api_request_json(method: str, url: str, auth: str, body: dict | None = None) -> dict:
     data = None
     if body is not None:
@@ -172,6 +196,31 @@ def _upload_asset_streaming(repo: str, release_id: int, auth: str, file_path: Pa
         raise RuntimeError(f"upload failed: {file_path.name} status={resp.status} body={msg}")
 
 
+def _delete_asset(repo: str, asset_id: int, auth: str) -> None:
+    url = f"https://api.github.com/repos/{repo}/releases/assets/{asset_id}"
+    if _have_curl():
+        _curl_no_output("DELETE", url, auth, timeout_s=60)
+        return
+    req = urllib.request.Request(url, method="DELETE")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("User-Agent", "desktop-pet-with-llms-linux-release-uploader")
+    req.add_header("Authorization", auth)
+    with urllib.request.urlopen(req, timeout=60):
+        return
+
+
+def _validate_split_parts(base_dir: Path, prefix: str, count: int) -> None:
+    missing: list[str] = []
+    for i in range(1, count + 1):
+        name = f"{prefix}{i:03d}"
+        if not (base_dir / name).is_file():
+            missing.append(name)
+    if missing:
+        msg = "\n".join(missing[:50])
+        suffix = "\n..." if len(missing) > 50 else ""
+        raise SystemExit(f"missing required split parts:\n{msg}{suffix}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
@@ -181,6 +230,10 @@ def main() -> int:
     ap.add_argument("--pattern", action="append", default=[])
     ap.add_argument("--timeout", type=int, default=3600)
     ap.add_argument("--retries", type=int, default=3)
+    ap.add_argument("--from-name", default="")
+    ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--require-split-prefix", default="")
+    ap.add_argument("--require-split-count", type=int, default=0)
     args = ap.parse_args()
 
     auth = _git_github_basic_auth()
@@ -215,10 +268,27 @@ def main() -> int:
                 files.append(fp)
     files = sorted(files, key=lambda p: p.name)
 
+    if args.require_split_prefix and int(args.require_split_count) > 0:
+        _validate_split_parts(base_dir, args.require_split_prefix, int(args.require_split_count))
+
+    if args.from_name:
+        start_name = args.from_name
+        names = [p.name for p in files]
+        if start_name not in names:
+            raise SystemExit(f"--from-name not found in selected files: {start_name}")
+        start_idx = names.index(start_name)
+        files = files[start_idx:]
+
     for fp in files:
         if fp.name in existing:
-            print(f"skip: {fp.name}")
-            continue
+            if args.overwrite:
+                asset_id = int(existing[fp.name]["id"])
+                print(f"delete: {fp.name} (asset_id={asset_id})")
+                _delete_asset(args.repo, asset_id, auth)
+                existing.pop(fp.name, None)
+            else:
+                print(f"skip: {fp.name}")
+                continue
         ok = False
         for attempt in range(1, args.retries + 1):
             try:
