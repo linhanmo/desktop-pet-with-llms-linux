@@ -11,8 +11,8 @@
 - 多语言与主题：支持简体中文、英文与主题切换；配置与对话历史持久化存储。
 
 ## 环境要求（运行）
-- Windows 10/11（x64）
-- 建议安装 7-Zip（用于解压 build-msvc 分卷）
+- Windows 10/11（x64）：建议安装 7-Zip（用于解压 build-msvc 分卷）
+- Ubuntu 22.04（x64）：支持 X11 / Wayland（无可用 Wayland display 时会自动回退到 xcb）
 
 ## 环境要求（从源码构建）
 - Git、CMake、Visual Studio 2022 Build Tools（含 VC 工具链）
@@ -20,13 +20,14 @@
 - Windows PowerShell + winget（可选）：用于安装缺失依赖
 
 ## 下载与运行（解压即用）
-本项目采用 **build-msvc.zip 分卷**发布：下载后解压即可运行。
+本项目提供 Windows 与 Linux 的分卷包：下载后解压即可运行。
 
 1) 下载
-- 下载 Release 中的 `build-msvc.zip.001` ~ `build-msvc.zip.012`（必须全部下载到同一目录）
+- Windows：下载 Release 中的 `build-msvc.zip.001` ~ `build-msvc.zip.012`（必须全部下载到同一目录）
+- Linux：下载 Release 中的 `build-linux.zip.001` ~ `build-linux.zip.023`（必须全部下载到同一目录）
 
 2) 解压
-- 安装 7-Zip（推荐）后，在该目录执行：
+- Windows（7-Zip，推荐）：
 
 ```cmd
 7z x build-msvc.zip.001
@@ -34,8 +35,22 @@
 
 或在资源管理器里右键 `build-msvc.zip.001` → 7-Zip → 解压。
 
+- Linux（两种方式任选其一）：
+
+```bash
+cat build-linux.zip.* > build-linux.zip
+unzip build-linux.zip
+```
+
+或使用 7z：
+
+```bash
+7z x build-linux.zip.001
+```
+
 3) 运行
 - 解压完成后，进入 `release/` 目录，运行 `XiaoMo.exe`
+- Linux：解压完成后进入 `build-linux/portable-dist/`，运行 `./XiaoMo`
 
 ## 资源与目录约定
 应用运行时查找资源的根目录为 `release/` 目录下的 `res/`。
@@ -55,6 +70,18 @@ release/
     i18n/, icons/   # 语言与图标资源
 sdk/
   cubism/         # Cubism SDK（由 cubism.zip 解压得到）
+
+build-linux/
+  portable-dist/
+    XiaoMo
+    lib/
+    plugins/
+    qt.conf
+    res/
+      bin/
+      llm/
+      models/
+      voice_deps/
 ```
 
 Live2D 模型（`res/models/`）：
@@ -117,7 +144,7 @@ Live2D 模型（`res/models/`）：
 - 安装 Miniconda 并创建环境：`conda create -y -n qt6env -c conda-forge qt6-main ninja`
 
 2) 拉取与配置
-- 克隆仓库：`git clone https://github.com/linhanmo/desktop-pet-with-llms.git`
+- 克隆仓库：`git clone https://github.com/linhanmo/desktop-pet-with-llms-linux.git`
 - 准备 Qt6：找到 `Qt6_DIR` 与 `CMAKE_PREFIX_PATH`（通常在 `envs/qt6env/Library/lib/cmake/Qt6` 与 `envs/qt6env/Library`）
 
 3) CMake 构建
