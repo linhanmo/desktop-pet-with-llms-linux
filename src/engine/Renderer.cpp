@@ -16,6 +16,7 @@
 #include <QTextStream>
 #include <QWindow>
 #include <QStringList>
+#include <QImageReader>
 #include <QApplication>
 #include <QGuiApplication>
 #include "common/SettingsManager.hpp"
@@ -34,7 +35,9 @@
 
 // physics removed
 
-static const char* VS = R"GLSL(
+static QString shaderVsGlsl120()
+{
+    return QStringLiteral(R"GLSL(
 #version 120
 attribute vec2 aPos;
 attribute vec2 aUv;
@@ -43,9 +46,12 @@ void main(){
     vUv = aUv;
     gl_Position = vec4(aPos, 0.0, 1.0);
 }
-)GLSL";
+)GLSL");
+}
 
-static const char* FS = R"GLSL(
+static QString shaderFsGlsl120()
+{
+    return QStringLiteral(R"GLSL(
 #version 120
 uniform sampler2D uTex;
 uniform sampler2D uMaskTex;
@@ -58,13 +64,11 @@ uniform float uMaskThreshold; // discard low-alpha fringes when > 0
 varying vec2 vUv;
 void main(){
     if (uMaskWrite == 1) {
-        // mask pass: write source alpha into offscreen mask texture
         vec4 c = texture2D(uTex, vUv);
         if (c.a <= 0.0) discard;
         gl_FragColor = vec4(0.0, 0.0, 0.0, c.a);
     } else {
         vec4 c = texture2D(uTex, vUv);
-        // 可选丢弃：仅当阈值 > 0 时启用，避免产生锯齿
         if (uMaskThreshold > 0.0 && c.a < uMaskThreshold) discard;
         float factor = uOpacity;
         if (uUseMask == 1) {
@@ -78,7 +82,161 @@ void main(){
         gl_FragColor = vec4(c.rgb * factor, a);
     }
 }
-)GLSL";
+)GLSL");
+}
+
+static QString shaderVsGlsl330()
+{
+    return QStringLiteral(R"GLSL(
+#version 330 core
+in vec2 aPos;
+in vec2 aUv;
+out vec2 vUv;
+void main(){
+    vUv = aUv;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+)GLSL");
+}
+
+static QString shaderFsGlsl330()
+{
+    return QStringLiteral(R"GLSL(
+#version 330 core
+uniform sampler2D uTex;
+uniform sampler2D uMaskTex;
+uniform float uOpacity;
+uniform int uMaskWrite;
+uniform int uUseMask;
+uniform int uInvertMask;
+uniform vec2 uInvViewport;
+uniform float uMaskThreshold;
+in vec2 vUv;
+out vec4 fragColor;
+void main(){
+    if (uMaskWrite == 1) {
+        vec4 c = texture(uTex, vUv);
+        if (c.a <= 0.0) discard;
+        fragColor = vec4(0.0, 0.0, 0.0, c.a);
+    } else {
+        vec4 c = texture(uTex, vUv);
+        if (uMaskThreshold > 0.0 && c.a < uMaskThreshold) discard;
+        float factor = uOpacity;
+        if (uUseMask == 1) {
+            vec2 suv = vec2(gl_FragCoord.x * uInvViewport.x, gl_FragCoord.y * uInvViewport.y);
+            float ma = texture(uMaskTex, suv).a;
+            float m = (uInvertMask == 1) ? (1.0 - ma) : ma;
+            factor *= m;
+        }
+        float a = c.a * factor;
+        if (a <= 0.0) discard;
+        fragColor = vec4(c.rgb * factor, a);
+    }
+}
+)GLSL");
+}
+
+static QString shaderVsGlsl150()
+{
+    return QStringLiteral(R"GLSL(
+#version 150
+in vec2 aPos;
+in vec2 aUv;
+out vec2 vUv;
+void main(){
+    vUv = aUv;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+)GLSL");
+}
+
+static QString shaderFsGlsl150()
+{
+    return QStringLiteral(R"GLSL(
+#version 150
+uniform sampler2D uTex;
+uniform sampler2D uMaskTex;
+uniform float uOpacity;
+uniform int uMaskWrite;
+uniform int uUseMask;
+uniform int uInvertMask;
+uniform vec2 uInvViewport;
+uniform float uMaskThreshold;
+in vec2 vUv;
+out vec4 fragColor;
+void main(){
+    if (uMaskWrite == 1) {
+        vec4 c = texture(uTex, vUv);
+        if (c.a <= 0.0) discard;
+        fragColor = vec4(0.0, 0.0, 0.0, c.a);
+    } else {
+        vec4 c = texture(uTex, vUv);
+        if (uMaskThreshold > 0.0 && c.a < uMaskThreshold) discard;
+        float factor = uOpacity;
+        if (uUseMask == 1) {
+            vec2 suv = vec2(gl_FragCoord.x * uInvViewport.x, gl_FragCoord.y * uInvViewport.y);
+            float ma = texture(uMaskTex, suv).a;
+            float m = (uInvertMask == 1) ? (1.0 - ma) : ma;
+            factor *= m;
+        }
+        float a = c.a * factor;
+        if (a <= 0.0) discard;
+        fragColor = vec4(c.rgb * factor, a);
+    }
+}
+)GLSL");
+}
+
+static QString shaderVsGles100()
+{
+    return QStringLiteral(R"GLSL(
+#version 100
+attribute vec2 aPos;
+attribute vec2 aUv;
+varying vec2 vUv;
+void main(){
+    vUv = aUv;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+)GLSL");
+}
+
+static QString shaderFsGles100()
+{
+    return QStringLiteral(R"GLSL(
+#version 100
+precision mediump float;
+uniform sampler2D uTex;
+uniform sampler2D uMaskTex;
+uniform float uOpacity;
+uniform int uMaskWrite;
+uniform int uUseMask;
+uniform int uInvertMask;
+uniform vec2 uInvViewport;
+uniform float uMaskThreshold;
+varying vec2 vUv;
+void main(){
+    if (uMaskWrite == 1) {
+        vec4 c = texture2D(uTex, vUv);
+        if (c.a <= 0.0) discard;
+        gl_FragColor = vec4(0.0, 0.0, 0.0, c.a);
+    } else {
+        vec4 c = texture2D(uTex, vUv);
+        if (uMaskThreshold > 0.0 && c.a < uMaskThreshold) discard;
+        float factor = uOpacity;
+        if (uUseMask == 1) {
+            vec2 suv = vec2(gl_FragCoord.x * uInvViewport.x, gl_FragCoord.y * uInvViewport.y);
+            float ma = texture2D(uMaskTex, suv).a;
+            float m = (uInvertMask == 1) ? (1.0 - ma) : ma;
+            factor *= m;
+        }
+        float a = c.a * factor;
+        if (a <= 0.0) discard;
+        gl_FragColor = vec4(c.rgb * factor, a);
+    }
+}
+)GLSL");
+}
 
 Renderer::Renderer(QWidget *parent) : QOpenGLWidget(parent) {
     connect(&m_timer, &QTimer::timeout, this, [this]{
@@ -287,9 +445,13 @@ void Renderer::triggerInteractionReaction()
 
 void Renderer::load(const QString &modelJson) {
     // 在切换模型前，释放与旧模型相关的 GPU 资源，避免纹理持有导致泄漏
-    makeCurrent();
-    cleanupModelGL();
-    doneCurrent();
+    if (context() && context()->isValid()) {
+        makeCurrent();
+        cleanupModelGL();
+        doneCurrent();
+    } else {
+        cleanupModelGL();
+    }
 
     m_model = ModelLoader::loadModel(modelJson);
     m_reactionExpr.reset();
@@ -303,9 +465,13 @@ void Renderer::load(const QString &modelJson) {
     m_msaaSamples = SettingsManager::instance().msaaSamples();
 
     // 在有效 GL 上下文中创建新模型的纹理并分配给 drawables
-    makeCurrent();
-    buildModelTextures();
-    doneCurrent();
+    // 注意：启动早期 QOpenGLWidget 可能尚未创建上下文，这里必须延后到 initializeGL()
+    m_texturesReady = false;
+    if (context() && context()->isValid()) {
+        makeCurrent();
+        buildModelTextures();
+        doneCurrent();
+    }
 
     csmVector2 size, origin; float ppu;
     csmReadCanvasInfo(m_model->moc.model, &size, &origin, &ppu);
@@ -421,9 +587,51 @@ void Renderer::initializeGL() {
     // 只使用 MSAA；alpha-to-coverage 将在遮罩 pass 中按需开启
     glEnable(GL_MULTISAMPLE);
 
-    m_gpu.prog.addShaderFromSourceCode(QOpenGLShader::Vertex, VS);
-    m_gpu.prog.addShaderFromSourceCode(QOpenGLShader::Fragment, FS);
-    m_gpu.prog.link();
+    const QOpenGLContext* ctx = QOpenGLContext::currentContext();
+    const bool isGles = ctx ? ctx->isOpenGLES() : false;
+    const QSurfaceFormat fmt = ctx ? ctx->format() : format();
+
+    struct ShaderPair { QString vs; QString fs; QString tag; };
+    QVector<ShaderPair> candidates;
+    if (isGles)
+    {
+        candidates.push_back(ShaderPair{shaderVsGles100(), shaderFsGles100(), QStringLiteral("gles100")});
+    }
+    else
+    {
+        if (fmt.majorVersion() > 3 || (fmt.majorVersion() == 3 && fmt.minorVersion() >= 3))
+            candidates.push_back(ShaderPair{shaderVsGlsl330(), shaderFsGlsl330(), QStringLiteral("glsl330")});
+        if (fmt.majorVersion() >= 3)
+            candidates.push_back(ShaderPair{shaderVsGlsl150(), shaderFsGlsl150(), QStringLiteral("glsl150")});
+        candidates.push_back(ShaderPair{shaderVsGlsl120(), shaderFsGlsl120(), QStringLiteral("glsl120")});
+    }
+
+    QString lastLog;
+    QString lastTag;
+    bool linked = false;
+    for (const ShaderPair& c : candidates)
+    {
+        m_gpu.prog.removeAllShaders();
+        const bool okVs = m_gpu.prog.addShaderFromSourceCode(QOpenGLShader::Vertex, c.vs);
+        const bool okFs = m_gpu.prog.addShaderFromSourceCode(QOpenGLShader::Fragment, c.fs);
+        const bool okLink = okVs && okFs && m_gpu.prog.link();
+        lastLog = m_gpu.prog.log();
+        lastTag = c.tag;
+        if (okLink)
+        {
+            linked = true;
+            break;
+        }
+    }
+
+    if (!linked)
+    {
+        qWarning().noquote() << "Live2D shader build failed. isGles=" << isGles
+                             << "fmt=" << fmt.majorVersion() << "." << fmt.minorVersion()
+                             << "profile=" << fmt.profile()
+                             << "lastTag=" << lastTag
+                             << "log=" << lastLog;
+    }
     m_gpu.prog.bind();
     m_gpu.loc_pos = m_gpu.prog.attributeLocation("aPos");
     m_gpu.loc_uv  = m_gpu.prog.attributeLocation("aUv");
@@ -451,6 +659,8 @@ void Renderer::initializeGL() {
 
 void Renderer::resizeGL(int w, int h) {
     glViewport(0, 0, w, h);
+    m_framebufferW = std::max(1, w);
+    m_framebufferH = std::max(1, h);
     recomputeMapping();
     // 当高度变化时建议新的宽度
     emit requestFitWidthForHeight(h, suggestWidthForHeight(h));
@@ -459,8 +669,8 @@ void Renderer::resizeGL(int w, int h) {
 }
 
 void Renderer::recomputeMapping() {
-    int w = std::max(1, width());
-    int h = std::max(1, height());
+    int w = std::max(1, m_framebufferW > 0 ? m_framebufferW : width());
+    int h = std::max(1, m_framebufferH > 0 ? m_framebufferH : height());
 
     // Fit entire model bounds to window while preserving aspect ratio, with margins
     if (!m_haveBounds) { m_fitScale = 1.0f; m_fitOffsetPx = {0,0}; return; }
@@ -620,13 +830,36 @@ void Renderer::paintGL() {
         }
     }
 
+    static bool s_blankHintShown = false;
+    if (!s_blankHintShown)
+    {
+        bool anyVisible = false;
+        for (auto d : order)
+        {
+            if (!d->texture) continue;
+            if (d->opacity <= 0.001f) continue;
+            if (!(dynFlags[d->index] & csmIsVisible)) continue;
+            if (isForcedHiddenDrawable(d->index)) continue;
+            anyVisible = true;
+            break;
+        }
+        if (!anyVisible)
+        {
+            s_blankHintShown = true;
+            qWarning().noquote() << "Live2D: nothing rendered (no visible drawable with texture). model="
+                                 << m_model->rootDir << "drawables=" << m_model->drawables.size()
+                                 << "textures=" << m_model->texturesPaths.size();
+        }
+    }
+
 }
 
 void Renderer::upload(const Drawable &d, std::vector<float>& verts) {
     // build interleaved [pos.x pos.y uv.x uv.y] in NDC space
     verts.clear();
     verts.reserve(d.pos.size()*4);
-    int w = width(), h = height();
+    int w = std::max(1, m_framebufferW > 0 ? m_framebufferW : width());
+    int h = std::max(1, m_framebufferH > 0 ? m_framebufferH : height());
 
     float scale = m_fitScale;
     Vec2 offset = m_fitOffsetPx;
@@ -1825,12 +2058,27 @@ void Renderer::rebuildSurfaceForMsaa() {
 void Renderer::buildModelTextures() {
     if (!m_model) { m_texturesReady = false; return; }
     QVector<QSharedPointer<QOpenGLTexture>> texObjs(m_model->texturesPaths.size());
+    int okCount = 0;
     for (int i=0;i<texObjs.size();++i) {
         try {
-            // honor current texture cap by downscaling image further if needed
-            QImage img(m_model->texturesPaths[i]);
-            if (img.isNull()) throw std::runtime_error("bad texture");
+            const QString path = m_model->texturesPaths[i];
             const int cap = std::clamp(m_textureCap, 1024, 4096);
+
+            QImageReader reader(path);
+            reader.setAutoTransform(true);
+            const QSize rawSize = reader.size();
+            if (rawSize.isValid() && (rawSize.width() > cap || rawSize.height() > cap)) {
+                const double s = std::min((double)cap / rawSize.width(), (double)cap / rawSize.height());
+                const int nw = std::max(1, (int)std::floor(rawSize.width() * s));
+                const int nh = std::max(1, (int)std::floor(rawSize.height() * s));
+                reader.setScaledSize(QSize(nw, nh));
+            }
+
+            QImage img = reader.read();
+            if (img.isNull()) {
+                qWarning().noquote() << "Live2D texture load failed:" << path;
+                throw std::runtime_error("bad texture");
+            }
             if (img.width() > cap || img.height() > cap) {
                 const double s = std::min((double)cap / img.width(), (double)cap / img.height());
                 const int nw = std::max(1, (int)std::floor(img.width() * s));
@@ -1855,6 +2103,7 @@ void Renderer::buildModelTextures() {
             tex->bind(0); tex->setData(QOpenGLTexture::RGBA, QOpenGLTexture::UInt8, img.constBits()); if (useMips) tex->generateMipMaps(); tex->release();
             tex->setMaximumAnisotropy(useMips?4.0f:8.0f);
             texObjs[i] = tex;
+            okCount++;
         } catch (...) { texObjs[i].reset(); }
     }
     for (auto &d : m_model->drawables) {
@@ -1862,6 +2111,9 @@ void Renderer::buildModelTextures() {
         if (ti >= 0 && ti < texObjs.size()) d.texture = texObjs[ti]; else d.texture.reset();
     }
     m_texturesReady = true;
+    if (okCount == 0 && !m_model->texturesPaths.isEmpty()) {
+        qWarning().noquote() << "Live2D: all textures failed to load for model at" << m_model->rootDir;
+    }
 }
 
 void Renderer::contextMenuEvent(QContextMenuEvent *e) {

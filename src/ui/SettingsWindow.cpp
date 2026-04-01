@@ -28,6 +28,7 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QDesktopServices>
+#include <QtGlobal>
 #include <QUrl>
 #include <QStyleFactory>
 #include <QStyle>
@@ -93,11 +94,15 @@ bool currentColorThemeIsDark(const QWidget* context)
 {
     if (const QStyleHints* hints = QGuiApplication::styleHints())
     {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
         const Qt::ColorScheme scheme = hints->colorScheme();
         if (scheme == Qt::ColorScheme::Dark)
             return true;
         if (scheme == Qt::ColorScheme::Light)
             return false;
+#else
+        Q_UNUSED(hints);
+#endif
     }
 
     const QPalette palette = context ? context->palette() : QApplication::palette();
@@ -770,6 +775,8 @@ SettingsWindow::SettingsWindow(QWidget *parent) : QMainWindow(parent), d(new Imp
                 const QStringList one = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
                 for (const QString& name : one)
                 {
+                    if (name.startsWith(QStringLiteral("matcha-"), Qt::CaseInsensitive))
+                        continue;
                     if (!out.contains(name))
                         out.push_back(name);
                 }

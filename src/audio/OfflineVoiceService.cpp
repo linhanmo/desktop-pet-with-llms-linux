@@ -40,6 +40,12 @@ static void showSpeakerHint(const QString& detail)
     QString tip = QObject::tr("无法播放音频输出。\n\n请检查桌面环境的音频输出设备设置，并确保音量正常。");
 #endif
     const QString d = detail.trimmed();
+    if (d.contains(QStringLiteral("Please provide --matcha-vocoder"), Qt::CaseInsensitive)
+        || d.contains(QStringLiteral("offline-tts-vits-model.cc:Init"), Qt::CaseInsensitive)
+        || d.contains(QStringLiteral("Errors in config"), Qt::CaseInsensitive))
+    {
+        tip = QObject::tr("离线语音合成（TTS）失败。\n\n当前选择的模型可能不兼容或缺少必要文件（例如 Matcha 模型缺少 vocoder）。\n请在设置里更换一个可用的 TTS 模型（例如 vits-melo-tts-zh_en）。");
+    }
     if (!d.isEmpty())
         tip += QStringLiteral("\n\n") + (d.size() > 1200 ? d.right(1200) : d);
 
@@ -819,10 +825,14 @@ QString OfflineVoiceService::exePath(const QString& baseName) const
 {
     const QString dir = m_settings.binDir.trimmed();
     if (dir.isEmpty()) return {};
+#if defined(Q_OS_WIN32)
     const QString exe = baseName.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive)
                             ? baseName
                             : (baseName + QStringLiteral(".exe"));
     return QDir(dir).filePath(exe);
+#else
+    return QDir(dir).filePath(baseName);
+#endif
 }
 
 QStringList OfflineVoiceService::splitArgs(const QString& args) const
@@ -851,6 +861,28 @@ static void applySherpaEnv(QProcess* p, const QString& binDir)
         parts << libDir;
     parts << oldPath;
     env.insert(QStringLiteral("PATH"), parts.join(QDir::listSeparator()));
+
+#if defined(Q_OS_LINUX)
+    if (!libDir.isEmpty() && QFileInfo::exists(libDir) && QFileInfo(libDir).isDir())
+    {
+        const QString oldLd = env.value(QStringLiteral("LD_LIBRARY_PATH"));
+        QStringList ldParts;
+        ldParts << libDir;
+        if (!oldLd.trimmed().isEmpty())
+            ldParts << oldLd;
+        env.insert(QStringLiteral("LD_LIBRARY_PATH"), ldParts.join(QDir::listSeparator()));
+    }
+#elif defined(Q_OS_MACOS)
+    if (!libDir.isEmpty() && QFileInfo::exists(libDir) && QFileInfo(libDir).isDir())
+    {
+        const QString oldDyld = env.value(QStringLiteral("DYLD_LIBRARY_PATH"));
+        QStringList dyldParts;
+        dyldParts << libDir;
+        if (!oldDyld.trimmed().isEmpty())
+            dyldParts << oldDyld;
+        env.insert(QStringLiteral("DYLD_LIBRARY_PATH"), dyldParts.join(QDir::listSeparator()));
+    }
+#endif
     p->setProcessEnvironment(env);
 }
 
@@ -861,11 +893,19 @@ void OfflineVoiceService::startTts(const QString& text)
 #if defined(AMAIGIRL_USE_QT_MULTIMEDIA)
     const QString programGen = exePath(QStringLiteral("sherpa-onnx-offline-tts"));
     const QString programPlay = exePath(QStringLiteral("sherpa-onnx-offline-tts-play"));
+    const QString programPlayAlsa = exePath(QStringLiteral("sherpa-onnx-offline-tts-play-alsa"));
     const bool canGen = !programGen.isEmpty() && QFileInfo::exists(programGen);
     const bool canPlay = !programPlay.isEmpty() && QFileInfo::exists(programPlay);
+    const bool canPlayAlsa = !programPlayAlsa.isEmpty() && QFileInfo::exists(programPlayAlsa);
+#if defined(Q_OS_LINUX)
+    const QString program = canPlayAlsa ? programPlayAlsa : (canPlay ? programPlay : programGen);
+    if (!canGen && !canPlayAlsa && !canPlay)
+        return;
+#else
     const QString program = canPlay ? programPlay : programGen;
     if (!canGen && !canPlay)
         return;
+#endif
 #else
     const QString program = exePath(QStringLiteral("sherpa-onnx-offline-tts-play"));
     if (program.isEmpty() || !QFileInfo::exists(program))

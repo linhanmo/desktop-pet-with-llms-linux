@@ -16,6 +16,19 @@ endif()
 option(AMAIGIRL_ENABLE_APPIMAGE "Enable Linux AppImage packaging target" ON)
 option(AMAIGIRL_APPIMAGE_CLEAN "Clean AppDir before packaging AppImage" ON)
 option(AMAIGIRL_ENABLE_WINDEPLOYQT "Enable Windows deployment/package targets" ON)
+option(AMAIGIRL_ENABLE_LIVE2D "Enable Live2D/Cubism rendering" ON)
+set(AMAIGIRL_CUBISM_SDK_DIR "" CACHE PATH "Optional override path to Live2D Cubism SDK root (contains include/ and lib/)")
+set(_AMAIGIRL_FETCH_DEPS_DEFAULT OFF)
+if(UNIX AND NOT APPLE)
+    set(_AMAIGIRL_FETCH_DEPS_DEFAULT ON)
+endif()
+option(AMAIGIRL_FETCH_LLAMA_CPP "Fetch and build llama.cpp runner (llama-cli) from official GitHub" ${_AMAIGIRL_FETCH_DEPS_DEFAULT})
+option(AMAIGIRL_FETCH_SHERPA_ONNX "Fetch sherpa-onnx runtime from official GitHub releases" ${_AMAIGIRL_FETCH_DEPS_DEFAULT})
+option(AMAIGIRL_FETCH_APPIMAGE_TOOLS "Fetch linuxdeploy/appimagetool from official GitHub releases when missing" ${_AMAIGIRL_FETCH_DEPS_DEFAULT})
+set(AMAIGIRL_LLAMA_CPP_GIT_TAG "master" CACHE STRING "llama.cpp git tag/branch/commit to fetch")
+set(AMAIGIRL_LLAMA_CPP_URL_PREFIX "" CACHE STRING "Optional prefix for llama.cpp source tarball URL (e.g. https://ghproxy.com/ )")
+set(AMAIGIRL_SHERPA_ONNX_VERSION "1.12.10" CACHE STRING "sherpa-onnx release version to download (without leading 'v')")
+option(AMAIGIRL_ENABLE_PORTABLE_LINUX_BUNDLE "Create a portable Linux folder (no conda needed at runtime) via install_portable target" ${_AMAIGIRL_FETCH_DEPS_DEFAULT})
 set(AMAIGIRL_LINUXDEPLOY_EXECUTABLE "" CACHE FILEPATH "Optional path override for linuxdeploy executable")
 set(AMAIGIRL_APPIMAGETOOL_EXECUTABLE "" CACHE FILEPATH "Optional path override for appimagetool executable")
 set(AMAIGIRL_QMAKE_EXECUTABLE "" CACHE FILEPATH "Optional path override for qmake/qmake6 executable")
@@ -64,6 +77,74 @@ if(UNIX AND NOT APPLE AND AMAIGIRL_ENABLE_APPIMAGE)
         )
     endif()
 
+    if(AMAIGIRL_FETCH_APPIMAGE_TOOLS AND (NOT LINUXDEPLOY_EXECUTABLE OR NOT APPIMAGETOOL_EXECUTABLE))
+        set(_AMAIGIRL_TOOLS_DIR "${CMAKE_BINARY_DIR}/_amaigirl_tools")
+        file(MAKE_DIRECTORY "${_AMAIGIRL_TOOLS_DIR}")
+
+        function(_amaigirl_download_tool _name _url _out_var)
+            set(_dst "${_AMAIGIRL_TOOLS_DIR}/${_name}.AppImage")
+            set(_need_download OFF)
+            if(NOT EXISTS "${_dst}")
+                set(_need_download ON)
+            else()
+                file(SIZE "${_dst}" _dst_size)
+                if(_dst_size EQUAL 0)
+                    set(_need_download ON)
+                endif()
+            endif()
+            if(_need_download)
+                message(STATUS "Downloading ${_name} from ${_url}")
+                file(REMOVE "${_dst}")
+                set(_dl_tls_args "")
+                if(EXISTS "/etc/ssl/certs/ca-certificates.crt")
+                    list(APPEND _dl_tls_args TLS_CAINFO "/etc/ssl/certs/ca-certificates.crt")
+                endif()
+                file(DOWNLOAD "${_url}" "${_dst}"
+                    SHOW_PROGRESS
+                    STATUS _dl_status
+                    LOG _dl_log
+                    ${_dl_tls_args}
+                )
+                list(GET _dl_status 0 _code)
+                list(GET _dl_status 1 _msg)
+                if(NOT _code EQUAL 0)
+                    message(WARNING "Failed to download ${_name}: ${_msg}\n${_dl_log}")
+                else()
+                    file(CHMOD "${_dst}"
+                        PERMISSIONS
+                            OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                            GROUP_READ GROUP_EXECUTE
+                            WORLD_READ WORLD_EXECUTE
+                    )
+                endif()
+            endif()
+            if(EXISTS "${_dst}")
+                file(CHMOD "${_dst}"
+                    PERMISSIONS
+                        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                        GROUP_READ GROUP_EXECUTE
+                        WORLD_READ WORLD_EXECUTE
+                )
+                set(${_out_var} "${_dst}" PARENT_SCOPE)
+            endif()
+        endfunction()
+
+        if(NOT LINUXDEPLOY_EXECUTABLE)
+            _amaigirl_download_tool(
+                "linuxdeploy-${_APPIMAGE_ARCH}"
+                "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${_APPIMAGE_ARCH}.AppImage"
+                LINUXDEPLOY_EXECUTABLE
+            )
+        endif()
+        if(NOT APPIMAGETOOL_EXECUTABLE)
+            _amaigirl_download_tool(
+                "appimagetool-${_APPIMAGE_ARCH}"
+                "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${_APPIMAGE_ARCH}.AppImage"
+                APPIMAGETOOL_EXECUTABLE
+            )
+        endif()
+    endif()
+
     if(LINUXDEPLOY_EXECUTABLE AND APPIMAGETOOL_EXECUTABLE)
         set(AMAIGIRL_APPDIR "${CMAKE_BINARY_DIR}/AppDir")
         set(AMAIGIRL_DESKTOP_FILE "${CMAKE_SOURCE_DIR}/cmake/xiaomo.desktop")
@@ -77,6 +158,9 @@ if(UNIX AND NOT APPLE AND AMAIGIRL_ENABLE_APPIMAGE)
         endif()
 
         if(NOT AMAIGIRL_QMAKE_EXECUTABLE)
+            if(DEFINED ENV{CONDA_PREFIX} AND EXISTS "$ENV{CONDA_PREFIX}/bin/qmake6")
+                set(AMAIGIRL_QMAKE_EXECUTABLE "$ENV{CONDA_PREFIX}/bin/qmake6")
+            endif()
             set(_AMAIGIRL_QT_BIN_HINTS "")
             foreach(_qt_bin_candidate
                 "$ENV{QTDIR}/bin"
@@ -286,7 +370,22 @@ if(WIN32 AND NOT Qt6_DIR)
     endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Svg Multimedia)
+set(_AMAIGIRL_QT_COMPONENTS Core Gui Widgets Svg Multimedia)
+if(AMAIGIRL_ENABLE_LIVE2D)
+    list(APPEND _AMAIGIRL_QT_COMPONENTS OpenGL OpenGLWidgets)
+endif()
+find_package(Qt6 REQUIRED COMPONENTS ${_AMAIGIRL_QT_COMPONENTS})
+
+if(UNIX AND NOT APPLE AND AMAIGIRL_ENABLE_LIVE2D)
+    set(OpenGL_GL_PREFERENCE LEGACY)
+    find_package(OpenGL REQUIRED)
+    if(NOT TARGET OpenGL::GL AND OPENGL_gl_LIBRARY)
+        add_library(OpenGL::GL UNKNOWN IMPORTED)
+        set_target_properties(OpenGL::GL PROPERTIES
+            IMPORTED_LOCATION "${OPENGL_gl_LIBRARY}"
+        )
+    endif()
+endif()
 
 if(MSVC AND (Qt6_DIR MATCHES "mingw" OR Qt6Core_DIR MATCHES "mingw"))
     message(FATAL_ERROR
@@ -298,8 +397,74 @@ if(MSVC AND (Qt6_DIR MATCHES "mingw" OR Qt6Core_DIR MATCHES "mingw"))
     )
 endif()
 
+# Fetch/build runtime dependencies for Linux from official GitHub repos
+set(AMAIGIRL_LLAMA_CLI_PATH "")
+set(AMAIGIRL_SHERPA_RUNTIME_ROOT "")
+set(AMAIGIRL_SHERPA_RUNTIME_NAME "")
+if(UNIX AND NOT APPLE AND (AMAIGIRL_FETCH_LLAMA_CPP OR AMAIGIRL_FETCH_SHERPA_ONNX))
+    include(ExternalProject)
+    set(AMAIGIRL_DEPS_DIR "${CMAKE_BINARY_DIR}/_amaigirl_deps")
+    set(_AMAIGIRL_EP_DOWNLOAD_EXTRACT_TS_ARGS "")
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+        set(_AMAIGIRL_EP_DOWNLOAD_EXTRACT_TS_ARGS DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    endif()
+
+    if(AMAIGIRL_FETCH_LLAMA_CPP)
+        set(_AMAIGIRL_LLAMA_URL "")
+        if(AMAIGIRL_LLAMA_CPP_GIT_TAG STREQUAL "master" OR AMAIGIRL_LLAMA_CPP_GIT_TAG STREQUAL "main")
+            set(_AMAIGIRL_LLAMA_URL "https://codeload.github.com/ggerganov/llama.cpp/tar.gz/refs/heads/${AMAIGIRL_LLAMA_CPP_GIT_TAG}")
+        else()
+            set(_AMAIGIRL_LLAMA_URL "https://codeload.github.com/ggerganov/llama.cpp/tar.gz/${AMAIGIRL_LLAMA_CPP_GIT_TAG}")
+        endif()
+        if(AMAIGIRL_LLAMA_CPP_URL_PREFIX)
+            set(_AMAIGIRL_LLAMA_URL "${AMAIGIRL_LLAMA_CPP_URL_PREFIX}${_AMAIGIRL_LLAMA_URL}")
+        endif()
+
+        ExternalProject_Add(amaigirl_llama_cpp
+            URL "${_AMAIGIRL_LLAMA_URL}"
+            ${_AMAIGIRL_EP_DOWNLOAD_EXTRACT_TS_ARGS}
+            UPDATE_COMMAND ""
+            SOURCE_DIR "${AMAIGIRL_DEPS_DIR}/llama.cpp-src"
+            BINARY_DIR "${AMAIGIRL_DEPS_DIR}/llama.cpp-build"
+            CMAKE_ARGS
+                -DCMAKE_BUILD_TYPE=Release
+                -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+                -DCMAKE_INSTALL_RPATH=$ORIGIN
+                -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON
+                -DLLAMA_BUILD_TESTS=OFF
+                -DLLAMA_BUILD_EXAMPLES=ON
+            INSTALL_COMMAND ""
+        )
+        set(AMAIGIRL_LLAMA_CLI_PATH "${AMAIGIRL_DEPS_DIR}/llama.cpp-build/bin/llama-cli")
+    endif()
+
+    if(AMAIGIRL_FETCH_SHERPA_ONNX)
+        set(_AMAIGIRL_SHERPA_PLATFORM "linux-x64")
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+            set(_AMAIGIRL_SHERPA_PLATFORM "linux-aarch64")
+        endif()
+        set(AMAIGIRL_SHERPA_RUNTIME_NAME "sherpa-onnx-v${AMAIGIRL_SHERPA_ONNX_VERSION}-${_AMAIGIRL_SHERPA_PLATFORM}-shared")
+        set(_AMAIGIRL_SHERPA_URL "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${AMAIGIRL_SHERPA_ONNX_VERSION}/${AMAIGIRL_SHERPA_RUNTIME_NAME}.tar.bz2")
+
+        ExternalProject_Add(amaigirl_sherpa_onnx_runtime
+            URL "${_AMAIGIRL_SHERPA_URL}"
+            ${_AMAIGIRL_EP_DOWNLOAD_EXTRACT_TS_ARGS}
+            UPDATE_COMMAND ""
+            SOURCE_DIR "${AMAIGIRL_DEPS_DIR}/sherpa-onnx"
+            CONFIGURE_COMMAND ""
+            BUILD_COMMAND ""
+            INSTALL_COMMAND ""
+        )
+        set(AMAIGIRL_SHERPA_RUNTIME_ROOT "${AMAIGIRL_DEPS_DIR}/sherpa-onnx")
+    endif()
+endif()
+
 # Live2D Cubism Core SDK
-set(CUBISM_SDK_DIR "${CMAKE_SOURCE_DIR}/sdk/cubism")
+if(AMAIGIRL_CUBISM_SDK_DIR)
+    set(CUBISM_SDK_DIR "${AMAIGIRL_CUBISM_SDK_DIR}")
+else()
+    set(CUBISM_SDK_DIR "${CMAKE_SOURCE_DIR}/sdk/cubism")
+endif()
 set(CUBISM_INCLUDE_DIR "${CUBISM_SDK_DIR}/include")
 
 set(CUBISM_LIB_DIR "")
@@ -308,7 +473,15 @@ set(CUBISM_CORE_LIB_DEBUG "")
 set(CUBISM_CORE_LIB_RELEASE "")
 set(CUBISM_CORE_DLL_WINDOWS_X64 "")
 
-if(APPLE)
+set(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE "${AMAIGIRL_ENABLE_LIVE2D}")
+if(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE)
+    if(NOT EXISTS "${CUBISM_INCLUDE_DIR}/Live2DCubismCore.h")
+        set(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE OFF)
+        message(WARNING "Live2D Cubism SDK not found: missing header '${CUBISM_INCLUDE_DIR}/Live2DCubismCore.h'. Live2D will be disabled for this build.")
+    endif()
+endif()
+
+if(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE AND APPLE)
     set(_CUBISM_MACOS_ARM64_LIB "${CUBISM_SDK_DIR}/lib/macos/arm64/libLive2DCubismCore.a")
     set(_CUBISM_MACOS_X64_LIB "${CUBISM_SDK_DIR}/lib/macos/x86_64/libLive2DCubismCore.a")
 
@@ -352,7 +525,7 @@ if(APPLE)
         set(CUBISM_LIB_DIR "${CUBISM_SDK_DIR}/lib/macos/x86_64")
         set(CUBISM_CORE_LIB "${_CUBISM_MACOS_X64_LIB}")
     endif()
-elseif(WIN32)
+elseif(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE AND WIN32)
     # Cubism Windows libs are grouped by MSVC toolset (e.g. 143)
     set(_CUBISM_WIN_TOOLSET "143")
     if(DEFINED MSVC_TOOLSET_VERSION AND EXISTS "${CUBISM_SDK_DIR}/lib/windows/x86_64/${MSVC_TOOLSET_VERSION}")
@@ -369,68 +542,76 @@ elseif(WIN32)
     if(_CUBISM_CORE_DLL_COUNT GREATER 0)
         list(GET _CUBISM_CORE_DLL_CANDIDATES 0 CUBISM_CORE_DLL_WINDOWS_X64)
     endif()
-elseif(UNIX)
+elseif(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE AND UNIX)
     set(CUBISM_LIB_DIR "${CUBISM_SDK_DIR}/lib/linux/x86_64")
     set(CUBISM_CORE_LIB "${CUBISM_LIB_DIR}/libLive2DCubismCore.a")
 endif()
 
-# Import static Cubism Core library
-add_library(Live2DCubismCore STATIC IMPORTED GLOBAL)
-if(WIN32)
-    if(EXISTS "${CUBISM_CORE_LIB_RELEASE}")
+if(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE)
+    # Import static Cubism Core library
+    add_library(Live2DCubismCore STATIC IMPORTED GLOBAL)
+    if(WIN32)
+        if(EXISTS "${CUBISM_CORE_LIB_RELEASE}")
+            set_target_properties(Live2DCubismCore PROPERTIES
+                IMPORTED_LOCATION_RELEASE "${CUBISM_CORE_LIB_RELEASE}"
+                INTERFACE_INCLUDE_DIRECTORIES "${CUBISM_INCLUDE_DIR}"
+            )
+            if(EXISTS "${CUBISM_CORE_LIB_DEBUG}")
+                set_target_properties(Live2DCubismCore PROPERTIES
+                    IMPORTED_LOCATION_DEBUG "${CUBISM_CORE_LIB_DEBUG}"
+                )
+            else()
+                set_target_properties(Live2DCubismCore PROPERTIES
+                    IMPORTED_LOCATION_DEBUG "${CUBISM_CORE_LIB_RELEASE}"
+                )
+            endif()
+        else()
+            message(FATAL_ERROR "Cubism Core library not found for Windows: ${CUBISM_CORE_LIB_RELEASE}")
+        endif()
+    elseif(EXISTS "${CUBISM_CORE_LIB}" OR (APPLE AND TARGET cubism_core_universal))
         set_target_properties(Live2DCubismCore PROPERTIES
-            IMPORTED_LOCATION_RELEASE "${CUBISM_CORE_LIB_RELEASE}"
+            IMPORTED_LOCATION "${CUBISM_CORE_LIB}"
             INTERFACE_INCLUDE_DIRECTORIES "${CUBISM_INCLUDE_DIR}"
         )
-        if(EXISTS "${CUBISM_CORE_LIB_DEBUG}")
-            set_target_properties(Live2DCubismCore PROPERTIES
-                IMPORTED_LOCATION_DEBUG "${CUBISM_CORE_LIB_DEBUG}"
-            )
-        else()
-            set_target_properties(Live2DCubismCore PROPERTIES
-                IMPORTED_LOCATION_DEBUG "${CUBISM_CORE_LIB_RELEASE}"
-            )
+        if(APPLE AND TARGET cubism_core_universal)
+            add_dependencies(Live2DCubismCore cubism_core_universal)
         endif()
     else()
-        message(FATAL_ERROR "Cubism Core library not found for Windows: ${CUBISM_CORE_LIB_RELEASE}")
+        set(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE OFF)
+        message(WARNING "Cubism Core library not found for this platform. Expected in: ${CUBISM_LIB_DIR}. Live2D will be disabled for this build.")
     endif()
-elseif(EXISTS "${CUBISM_CORE_LIB}" OR (APPLE AND TARGET cubism_core_universal))
-    set_target_properties(Live2DCubismCore PROPERTIES
-        IMPORTED_LOCATION "${CUBISM_CORE_LIB}"
-        INTERFACE_INCLUDE_DIRECTORIES "${CUBISM_INCLUDE_DIR}"
-    )
-    if(APPLE AND TARGET cubism_core_universal)
-        add_dependencies(Live2DCubismCore cubism_core_universal)
-    endif()
-else()
-    message(FATAL_ERROR "Cubism Core library not found for this platform. Expected in: ${CUBISM_LIB_DIR}")
-endif()
 
-    # Map unspecified multi-configs to Release to satisfy imported target requirements
-    set_target_properties(Live2DCubismCore PROPERTIES
-        MAP_IMPORTED_CONFIG_MINSIZEREL Release
-        MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release
-    )
+    if(TARGET Live2DCubismCore)
+        # Map unspecified multi-configs to Release to satisfy imported target requirements
+        set_target_properties(Live2DCubismCore PROPERTIES
+            MAP_IMPORTED_CONFIG_MINSIZEREL Release
+            MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release
+        )
+    endif()
+endif()
 
 # Sources (reflect new folder layout under src/)
 set(APP_SOURCES
     src/app/main.cpp
     src/app/Version.hpp
 )
-set(ENGINE_SOURCES
-    src/engine/Renderer.hpp
-    src/engine/Renderer.cpp
-    src/engine/Live2DCore.hpp
-    src/engine/Live2DCore.cpp
-    src/engine/Model.hpp
-    src/engine/Model.cpp
-    src/engine/Motion.hpp
-    src/engine/Motion.cpp
-    src/engine/Expression.hpp
-    src/engine/Expression.cpp
-    src/engine/PhysicsEngine.hpp
-    src/engine/PhysicsEngine.cpp
-)
+set(ENGINE_SOURCES)
+if(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE)
+    set(ENGINE_SOURCES
+        src/engine/Renderer.hpp
+        src/engine/Renderer.cpp
+        src/engine/Live2DCore.hpp
+        src/engine/Live2DCore.cpp
+        src/engine/Model.hpp
+        src/engine/Model.cpp
+        src/engine/Motion.hpp
+        src/engine/Motion.cpp
+        src/engine/Expression.hpp
+        src/engine/Expression.cpp
+        src/engine/PhysicsEngine.hpp
+        src/engine/PhysicsEngine.cpp
+    )
+endif()
 set(UI_SOURCES
     src/ui/theme/ThemeApi.hpp
     src/ui/theme/ThemeApi.cpp
@@ -543,7 +724,10 @@ endif()
 
 # Include dirs: single root only (Scheme A)
 set(SRC_ROOT "${PROJECT_SOURCE_DIR}/src")
-target_include_directories(XiaoMo PRIVATE ${SRC_ROOT} ${CUBISM_INCLUDE_DIR})
+target_include_directories(XiaoMo PRIVATE ${SRC_ROOT})
+if(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE)
+    target_include_directories(XiaoMo PRIVATE ${CUBISM_INCLUDE_DIR})
+endif()
 
 if(MSVC)
     target_compile_options(XiaoMo PRIVATE /Zc:__cplusplus)
@@ -557,14 +741,25 @@ target_link_libraries(XiaoMo PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
-    Qt6::OpenGL
-    Qt6::OpenGLWidgets
     Qt6::Svg
-    Live2DCubismCore
 )
 
 target_link_libraries(XiaoMo PRIVATE Qt6::Multimedia)
 target_compile_definitions(XiaoMo PRIVATE AMAIGIRL_USE_QT_MULTIMEDIA=1)
+
+if(AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE)
+    target_link_libraries(XiaoMo PRIVATE
+        Qt6::OpenGL
+        Qt6::OpenGLWidgets
+        Live2DCubismCore
+    )
+endif()
+
+target_compile_definitions(XiaoMo PRIVATE AMAIGIRL_ENABLE_LIVE2D=$<IF:$<BOOL:${AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE}>,1,0>)
+
+if(UNIX AND NOT APPLE AND AMAIGIRL_ENABLE_LIVE2D_EFFECTIVE AND OPENGL_INCLUDE_DIR)
+    target_include_directories(XiaoMo PRIVATE "${OPENGL_INCLUDE_DIR}")
+endif()
 
 if(WIN32)
     target_link_libraries(XiaoMo PRIVATE dwmapi windowsapp)
@@ -878,6 +1073,26 @@ if(APPLE)
 endif()
 
 # Copy resources into app output
+set(_AMAIGIRL_POST_BUILD_DEPS_CMDS "")
+if(UNIX AND NOT APPLE)
+    if(TARGET amaigirl_llama_cpp)
+        add_dependencies(XiaoMo amaigirl_llama_cpp)
+        list(APPEND _AMAIGIRL_POST_BUILD_DEPS_CMDS
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/res/bin"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${AMAIGIRL_LLAMA_CLI_PATH}" "${CMAKE_SOURCE_DIR}/res/bin/llama-cli"
+        )
+    endif()
+    if(TARGET amaigirl_sherpa_onnx_runtime)
+        add_dependencies(XiaoMo amaigirl_sherpa_onnx_runtime)
+        list(APPEND _AMAIGIRL_POST_BUILD_DEPS_CMDS
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/res/voice_deps"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${AMAIGIRL_SHERPA_RUNTIME_ROOT}" "${CMAKE_SOURCE_DIR}/res/voice_deps/${AMAIGIRL_SHERPA_RUNTIME_NAME}"
+        )
+    endif()
+endif()
+
 if(APPLE)
     # Bundle layout: XiaoMo.app/Contents/Resources
     add_custom_command(TARGET XiaoMo POST_BUILD
@@ -887,9 +1102,206 @@ if(APPLE)
     )
 else()
     add_custom_command(TARGET XiaoMo POST_BUILD
+        ${_AMAIGIRL_POST_BUILD_DEPS_CMDS}
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_SOURCE_DIR}/res" "$<TARGET_FILE_DIR:XiaoMo>/res"
         COMMENT "Copying resources to output directory"
+    )
+endif()
+
+# Portable Linux bundle (no conda needed at runtime): build -> install_portable -> run from portable directory
+if(UNIX AND NOT APPLE AND AMAIGIRL_ENABLE_PORTABLE_LINUX_BUNDLE)
+    set(AMAIGIRL_PORTABLE_PREFIX "${CMAKE_BINARY_DIR}/portable-dist" CACHE PATH "Portable bundle output directory")
+
+    set_target_properties(XiaoMo PROPERTIES
+        INSTALL_RPATH "$ORIGIN/lib"
+    )
+
+    if(NOT AMAIGIRL_QMAKE_EXECUTABLE)
+        find_program(AMAIGIRL_QMAKE_EXECUTABLE NAMES qmake6 qmake)
+    endif()
+
+    set(AMAIGIRL_QT_PLUGINS_DIR "")
+    set(AMAIGIRL_QT_LIBS_DIR "")
+    if(AMAIGIRL_QMAKE_EXECUTABLE)
+        execute_process(
+            COMMAND "${AMAIGIRL_QMAKE_EXECUTABLE}" -query QT_INSTALL_PLUGINS
+            OUTPUT_VARIABLE AMAIGIRL_QT_PLUGINS_DIR
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        execute_process(
+            COMMAND "${AMAIGIRL_QMAKE_EXECUTABLE}" -query QT_INSTALL_LIBS
+            OUTPUT_VARIABLE AMAIGIRL_QT_LIBS_DIR
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+    endif()
+
+    set(_AMAIGIRL_QT_PLUGINS_DIR_DERIVED "")
+    set(_AMAIGIRL_QT_LIBS_DIR_DERIVED "")
+    if(DEFINED Qt6_DIR AND EXISTS "${Qt6_DIR}")
+        get_filename_component(_qt6_cmake_dir "${Qt6_DIR}" DIRECTORY)
+        get_filename_component(_qt6_lib_dir "${_qt6_cmake_dir}" DIRECTORY)
+        set(_AMAIGIRL_QT_LIBS_DIR_DERIVED "${_qt6_lib_dir}")
+        set(_AMAIGIRL_QT_PLUGINS_DIR_DERIVED "${_qt6_lib_dir}/qt6/plugins")
+    endif()
+
+    set(_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE "${AMAIGIRL_QT_PLUGINS_DIR}")
+    if(NOT (_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE AND EXISTS "${_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE}"))
+        if(_AMAIGIRL_QT_PLUGINS_DIR_DERIVED AND EXISTS "${_AMAIGIRL_QT_PLUGINS_DIR_DERIVED}")
+            set(_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE "${_AMAIGIRL_QT_PLUGINS_DIR_DERIVED}")
+        endif()
+    endif()
+
+    set(_AMAIGIRL_QT_LIBS_DIR_EFFECTIVE "${AMAIGIRL_QT_LIBS_DIR}")
+    if(NOT (_AMAIGIRL_QT_LIBS_DIR_EFFECTIVE AND EXISTS "${_AMAIGIRL_QT_LIBS_DIR_EFFECTIVE}"))
+        if(_AMAIGIRL_QT_LIBS_DIR_DERIVED AND EXISTS "${_AMAIGIRL_QT_LIBS_DIR_DERIVED}")
+            set(_AMAIGIRL_QT_LIBS_DIR_EFFECTIVE "${_AMAIGIRL_QT_LIBS_DIR_DERIVED}")
+        endif()
+    endif()
+
+    if(_AMAIGIRL_QT_LIBS_DIR_EFFECTIVE AND _AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE)
+        set(_AMAIGIRL_RUN_SH_TEMPLATE [=[
+#!/usr/bin/env bash
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+export LD_LIBRARY_PATH="@AMAIGIRL_QT_LIB_DIR@:$LD_LIBRARY_PATH"
+export QT_PLUGIN_PATH="@AMAIGIRL_QT_PLUGIN_DIR@"
+exec "$HERE/XiaoMo" "$@"
+]=])
+        set(AMAIGIRL_QT_LIB_DIR "${_AMAIGIRL_QT_LIBS_DIR_EFFECTIVE}")
+        set(AMAIGIRL_QT_PLUGIN_DIR "${_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE}")
+        string(CONFIGURE "${_AMAIGIRL_RUN_SH_TEMPLATE}" _AMAIGIRL_RUN_SH_CONTENT @ONLY)
+        file(WRITE "${CMAKE_BINARY_DIR}/run.sh" "${_AMAIGIRL_RUN_SH_CONTENT}")
+        file(CHMOD "${CMAKE_BINARY_DIR}/run.sh"
+            PERMISSIONS
+                OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                GROUP_READ GROUP_EXECUTE
+                WORLD_READ WORLD_EXECUTE
+        )
+    endif()
+
+    set(_AMAIGIRL_QTCONF_PATH "${CMAKE_BINARY_DIR}/qt.conf")
+    file(WRITE "${_AMAIGIRL_QTCONF_PATH}" "[Paths]\nPlugins=plugins\n")
+
+    install(TARGETS XiaoMo RUNTIME DESTINATION .)
+    install(FILES "${_AMAIGIRL_QTCONF_PATH}" DESTINATION .)
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/res" DESTINATION .)
+    install(CODE [[
+        set(_bin_dir "${CMAKE_INSTALL_PREFIX}/res/bin")
+        if(EXISTS "${_bin_dir}")
+            set(_llama_src "${CMAKE_BINARY_DIR}/_amaigirl_deps/llama.cpp-build/bin")
+            if(EXISTS "${_llama_src}/llama-cli")
+                file(COPY_FILE "${_llama_src}/llama-cli" "${_bin_dir}/llama-cli" ONLY_IF_DIFFERENT)
+                file(CHMOD "${_bin_dir}/llama-cli"
+                    PERMISSIONS
+                        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                        GROUP_READ GROUP_EXECUTE
+                        WORLD_READ WORLD_EXECUTE
+                )
+                foreach(_pat IN ITEMS "libllama.so*" "libmtmd.so*" "libggml.so*" "libggml-base.so*" "libggml-cpu.so*")
+                    file(GLOB _hits "${_llama_src}/${_pat}")
+                    foreach(_h IN LISTS _hits)
+                        if(EXISTS "${_h}")
+                            file(INSTALL DESTINATION "${_bin_dir}" TYPE SHARED_LIBRARY FOLLOW_SYMLINK_CHAIN FILES "${_h}")
+                        endif()
+                    endforeach()
+                endforeach()
+            endif()
+            foreach(_f IN ITEMS llama-cli llama)
+                if(EXISTS "${_bin_dir}/${_f}")
+                    file(CHMOD "${_bin_dir}/${_f}"
+                        PERMISSIONS
+                            OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                            GROUP_READ GROUP_EXECUTE
+                            WORLD_READ WORLD_EXECUTE
+                    )
+                endif()
+            endforeach()
+        endif()
+
+        if(EXISTS "${CMAKE_INSTALL_PREFIX}/res/voice_deps")
+            file(GLOB_RECURSE _voice_bins
+                RELATIVE "${CMAKE_INSTALL_PREFIX}"
+                "${CMAKE_INSTALL_PREFIX}/res/voice_deps/*/bin/*"
+            )
+            foreach(_rel IN LISTS _voice_bins)
+                set(_p "${CMAKE_INSTALL_PREFIX}/${_rel}")
+                if(EXISTS "${_p}" AND NOT IS_DIRECTORY "${_p}")
+                    file(CHMOD "${_p}"
+                        PERMISSIONS
+                            OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                            GROUP_READ GROUP_EXECUTE
+                            WORLD_READ WORLD_EXECUTE
+                    )
+                endif()
+            endforeach()
+        endif()
+    ]])
+
+    if(_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE AND EXISTS "${_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE}")
+        foreach(_sub platforms imageformats iconengines styles multimedia platformthemes)
+            if(EXISTS "${_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE}/${_sub}")
+                install(DIRECTORY "${_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE}/${_sub}" DESTINATION "plugins")
+            endif()
+        endforeach()
+        if(EXISTS "${_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE}/xcbglintegrations")
+            install(DIRECTORY "${_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE}/xcbglintegrations" DESTINATION "plugins")
+        endif()
+        foreach(_sub wayland-decoration-client wayland-graphics-integration-client wayland-shell-integration)
+            if(EXISTS "${_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE}/${_sub}")
+                install(DIRECTORY "${_AMAIGIRL_QT_PLUGINS_DIR_EFFECTIVE}/${_sub}" DESTINATION "plugins")
+            endif()
+        endforeach()
+    endif()
+
+    set(_AMAIGIRL_PORTABLE_INSTALL_CODE_TEMPLATE [=[
+if(POLICY CMP0207)
+  cmake_policy(SET CMP0207 NEW)
+endif()
+set(_exe "${CMAKE_INSTALL_PREFIX}/XiaoMo")
+set(_dest_lib "${CMAKE_INSTALL_PREFIX}/lib")
+file(MAKE_DIRECTORY "${_dest_lib}")
+set(_search_dirs "")
+if(DEFINED ENV{CONDA_PREFIX} AND EXISTS "$ENV{CONDA_PREFIX}/lib")
+  list(APPEND _search_dirs "$ENV{CONDA_PREFIX}/lib")
+endif()
+set(_amaigirl_qt_lib_dir "@AMAIGIRL_QT_LIB_DIR@")
+if(_amaigirl_qt_lib_dir AND EXISTS "${_amaigirl_qt_lib_dir}")
+  list(APPEND _search_dirs "${_amaigirl_qt_lib_dir}")
+endif()
+file(GET_RUNTIME_DEPENDENCIES
+  EXECUTABLES "${_exe}"
+  RESOLVED_DEPENDENCIES_VAR _resolved
+  UNRESOLVED_DEPENDENCIES_VAR _unresolved
+  DIRECTORIES ${_search_dirs}
+  PRE_EXCLUDE_REGEXES
+    ".*libc\\.so\\..*"
+    ".*libm\\.so\\..*"
+    ".*libpthread\\.so\\..*"
+    ".*librt\\.so\\..*"
+    ".*libdl\\.so\\..*"
+    ".*ld-linux.*\\.so\\..*"
+  POST_EXCLUDE_REGEXES
+    "^/lib"
+    "^/usr/lib"
+)
+foreach(_dep IN LISTS _resolved)
+  file(INSTALL DESTINATION "${_dest_lib}" TYPE SHARED_LIBRARY FOLLOW_SYMLINK_CHAIN FILES "${_dep}")
+endforeach()
+if(_unresolved)
+  message(WARNING "Unresolved runtime deps for portable bundle: ${_unresolved}")
+endif()
+]=])
+    set(AMAIGIRL_QT_LIB_DIR "${_AMAIGIRL_QT_LIBS_DIR_EFFECTIVE}")
+    string(CONFIGURE "${_AMAIGIRL_PORTABLE_INSTALL_CODE_TEMPLATE}" _AMAIGIRL_PORTABLE_INSTALL_CODE @ONLY)
+    install(CODE "${_AMAIGIRL_PORTABLE_INSTALL_CODE}")
+
+    add_custom_target(install_portable
+        COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --prefix "${AMAIGIRL_PORTABLE_PREFIX}"
+        DEPENDS XiaoMo
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        COMMENT "Installing portable Linux bundle into ${AMAIGIRL_PORTABLE_PREFIX}"
+        VERBATIM
     )
 endif()
 

@@ -84,9 +84,13 @@ void EraLineEdit::init()
     setMinimumHeight(32);
     if (auto* hints = QGuiApplication::styleHints())
     {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
         connect(hints, &QStyleHints::colorSchemeChanged, this, [this](Qt::ColorScheme) {
             QTimer::singleShot(0, this, [this] { updateColors(); });
         });
+#else
+        Q_UNUSED(hints);
+#endif
     }
     updateColors();
 }

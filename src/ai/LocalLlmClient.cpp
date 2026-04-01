@@ -153,7 +153,8 @@ QString sanitizeLlamaCliOutput(QString text, const QString& promptEcho)
         if (t.startsWith(QStringLiteral("/exit"))
             || t.startsWith(QStringLiteral("/regen"))
             || t.startsWith(QStringLiteral("/clear"))
-            || t.startsWith(QStringLiteral("/read")))
+            || t.startsWith(QStringLiteral("/read"))
+            || t.startsWith(QStringLiteral("/glob")))
         {
             continue;
         }
@@ -179,7 +180,8 @@ QString sanitizeLlamaCliOutput(QString text, const QString& promptEcho)
             if (t.startsWith(QStringLiteral("/exit"))
                 || t.startsWith(QStringLiteral("/regen"))
                 || t.startsWith(QStringLiteral("/clear"))
-                || t.startsWith(QStringLiteral("/read")))
+                || t.startsWith(QStringLiteral("/read"))
+                || t.startsWith(QStringLiteral("/glob")))
             {
                 continue;
             }
@@ -360,6 +362,24 @@ void LocalLlmClient::generate(const QString& prompt, int maxTokens)
     m_proc->setArguments(args);
     m_proc->setProcessChannelMode(QProcess::MergedChannels);
 
+    {
+        auto env = QProcessEnvironment::systemEnvironment();
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const QString libDir = QDir(appDir).filePath(QStringLiteral("lib"));
+        const QString binDir = QDir(appResourcePath(QStringLiteral("bin"))).absolutePath();
+        const QString oldLd = env.value(QStringLiteral("LD_LIBRARY_PATH"));
+        QStringList ldParts;
+        if (QFileInfo::exists(libDir) && QFileInfo(libDir).isDir())
+            ldParts << libDir;
+        if (QFileInfo::exists(binDir) && QFileInfo(binDir).isDir())
+            ldParts << binDir;
+        if (!oldLd.trimmed().isEmpty())
+            ldParts << oldLd;
+        if (!ldParts.isEmpty())
+            env.insert(QStringLiteral("LD_LIBRARY_PATH"), ldParts.join(QDir::listSeparator()));
+        proc->setProcessEnvironment(env);
+    }
+
     const QString promptEcho = trimmed;
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc, promptEcho]{
         if (proc != m_proc) return;
@@ -430,10 +450,23 @@ void LocalLlmClient::clearConversation()
 
 QString LocalLlmClient::resolveRunnerPath() const
 {
+    auto ensureExecutable = [](const QString& p) -> bool {
+        const QFileInfo fi(p);
+        if (!fi.exists() || !fi.isFile())
+            return false;
+        if (fi.isExecutable())
+            return true;
+        QFile f(p);
+        QFile::Permissions perm = f.permissions();
+        perm |= QFile::ExeOwner | QFile::ExeGroup | QFile::ExeOther;
+        f.setPermissions(perm);
+        return QFileInfo(p).isExecutable();
+    };
+
     const QByteArray env = qgetenv("LLAMA_RUNNER");
     if (!env.isEmpty()) {
         const QString p = QString::fromLocal8Bit(env);
-        if (QFileInfo::exists(p)) return p;
+        if (ensureExecutable(p)) return p;
     }
 
 #if defined(Q_OS_WIN)
@@ -448,9 +481,9 @@ QString LocalLlmClient::resolveRunnerPath() const
     {
         const QDir d(appResourcePath(QStringLiteral("bin")));
         const QString cli = d.filePath(QStringLiteral("llama-cli"));
-        if (QFileInfo::exists(cli)) return cli;
+        if (ensureExecutable(cli)) return cli;
         const QString legacy = d.filePath(QStringLiteral("llama"));
-        if (QFileInfo::exists(legacy)) return legacy;
+        if (ensureExecutable(legacy)) return legacy;
     }
 #endif
 
@@ -557,6 +590,23 @@ QString LocalLlmClient::generateSync(const QString& prompt, int maxTokens) const
     proc.setProgram(runner);
     proc.setArguments(args);
     proc.setProcessChannelMode(QProcess::MergedChannels);
+    {
+        auto env = QProcessEnvironment::systemEnvironment();
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const QString libDir = QDir(appDir).filePath(QStringLiteral("lib"));
+        const QString binDir = QDir(appResourcePath(QStringLiteral("bin"))).absolutePath();
+        const QString oldLd = env.value(QStringLiteral("LD_LIBRARY_PATH"));
+        QStringList ldParts;
+        if (QFileInfo::exists(libDir) && QFileInfo(libDir).isDir())
+            ldParts << libDir;
+        if (QFileInfo::exists(binDir) && QFileInfo(binDir).isDir())
+            ldParts << binDir;
+        if (!oldLd.trimmed().isEmpty())
+            ldParts << oldLd;
+        if (!ldParts.isEmpty())
+            env.insert(QStringLiteral("LD_LIBRARY_PATH"), ldParts.join(QDir::listSeparator()));
+        proc.setProcessEnvironment(env);
+    }
     proc.start();
     if (!proc.waitForFinished(30000)) {
         proc.kill();

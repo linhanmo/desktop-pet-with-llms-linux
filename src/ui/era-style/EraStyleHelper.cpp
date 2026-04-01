@@ -241,9 +241,13 @@ public:
     {
         if (auto* hints = QGuiApplication::styleHints())
         {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
             connect(hints, &QStyleHints::colorSchemeChanged, this, [this](Qt::ColorScheme) {
                 scheduleRefresh();
             });
+#else
+            Q_UNUSED(hints);
+#endif
         }
     }
 

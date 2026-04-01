@@ -2,7 +2,9 @@
 
 #include "common/SettingsManager.hpp"
 #include "ui/ChatWindow.hpp"
+#if AMAIGIRL_ENABLE_LIVE2D
 #include "engine/Renderer.hpp"
+#endif
 #include "ai/LocalLlmClient.hpp"
 
 #include <QDir>
@@ -165,6 +167,7 @@ ChatController::ChatController(QObject* parent)
         if (m_generationFolder != m_modelFolder) return;
 
         const auto d = parseLive2DDirectives(fullText);
+#if AMAIGIRL_ENABLE_LIVE2D
         if (m_renderer)
         {
             if (!d.expressionName.isEmpty())
@@ -172,6 +175,7 @@ ChatController::ChatController(QObject* parent)
             if (!d.motionGroup.isEmpty())
                 m_renderer->setMotionGroup(d.motionGroup);
         }
+#endif
         m_assistantDraft = d.cleanedText;
         emit assistantBubbleTextChanged(m_assistantDraft, true);
         m_chatWindow->finalizeAssistantMessage(d.cleanedText, true);
@@ -186,11 +190,14 @@ ChatController::ChatController(QObject* parent)
         emit assistantBubbleTextChanged(QString(), true);
     });
 
-    connect(m_llm, &LocalLlmClient::failed, this, [this]{
+    connect(m_llm, &LocalLlmClient::failed, this, [this](const QString& message){
         if (!m_chatWindow) return;
         m_chatWindow->cancelAssistantDraft();
         m_chatWindow->setBusy(false);
         m_assistantDraft.clear();
+        const QString t = message.trimmed();
+        if (!t.isEmpty())
+            m_chatWindow->finalizeAssistantMessage(QStringLiteral("（本地模型启动失败：%1）").arg(t), true);
         emit assistantBubbleTextChanged(QString(), true);
     });
 }
@@ -287,6 +294,7 @@ void ChatController::postLocalAssistantMessage(const QString& text,
     if (t.isEmpty())
         return;
 
+#if AMAIGIRL_ENABLE_LIVE2D
     if (m_renderer)
     {
         if (!expressionName.trimmed().isEmpty())
@@ -294,6 +302,7 @@ void ChatController::postLocalAssistantMessage(const QString& text,
         if (!motionGroup.trimmed().isEmpty())
             m_renderer->setMotionGroup(motionGroup.trimmed());
     }
+#endif
 
     m_assistantDraft = t;
     emit assistantBubbleTextChanged(t, true);
@@ -334,6 +343,7 @@ void ChatController::triggerLocalPrompt(const QString& userText,
     if (m_llm && m_llm->isRunning())
         m_llm->abort();
 
+#if AMAIGIRL_ENABLE_LIVE2D
     if (m_renderer)
     {
         if (!expressionName.trimmed().isEmpty())
@@ -341,6 +351,7 @@ void ChatController::triggerLocalPrompt(const QString& userText,
         if (!motionGroup.trimmed().isEmpty())
             m_renderer->setMotionGroup(motionGroup.trimmed());
     }
+#endif
 
     const QString folder = !m_modelFolder.isEmpty()
                                ? m_modelFolder

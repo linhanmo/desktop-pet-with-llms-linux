@@ -4,6 +4,7 @@
 *.iml
 /build-msvc/
 /build/
+/build-linux/
 /cmake-build-debug/
 /cmake-build-release/
 .DS_Store
@@ -11,6 +12,10 @@ README.md
 
 # Keep empty directories in git; store large assets in Releases
 /sdk/cubism/**
+/sdk/linux_headers/**
+/sdk/linux_headers_tmp/**
+/sdk/qt6_apt/**
+/sdk/qt6_apt_tmp/**
 !/sdk/cubism/.gitkeep
 
 /res/llm/**
@@ -34,3 +39,4 @@ res/llm/**/*.gguf
 
 # build files
 llm/llama.cpp/build
+llm_wsl/build/**

@@ -107,7 +107,15 @@ static QString voiceDepsRootDir()
 static QString sherpaDefaultBinDir()
 {
     const QString root = voiceDepsRootDir();
+#if defined(Q_OS_WIN32)
     const QString sherpaRoot = QDir(root).filePath(QStringLiteral("sherpa-onnx-v1.12.10-win-x64-shared"));
+#elif defined(Q_OS_MACOS)
+    const QString sherpaRoot = QDir(root).filePath(QStringLiteral("sherpa-onnx-v1.12.10-osx-universal2-shared"));
+#elif defined(Q_OS_LINUX)
+    const QString sherpaRoot = QDir(root).filePath(QStringLiteral("sherpa-onnx-v1.12.10-linux-x64-shared"));
+#else
+    const QString sherpaRoot = QDir(root).filePath(QStringLiteral("sherpa-onnx-v1.12.10-linux-x64-shared"));
+#endif
     const QString sherpaBin = QDir(sherpaRoot).filePath(QStringLiteral("bin"));
     if (QFileInfo::exists(sherpaBin) && QFileInfo(sherpaBin).isDir())
         return sherpaBin;
@@ -487,8 +495,36 @@ QString SettingsManager::sherpaTtsArgs() const
         return m_sherpaTtsArgs;
 
     const QString ttsBase = QDir(voiceDepsRootDir()).filePath(QStringLiteral("models"));
-    const QString modelId = pickModelId(ttsBase, m_sherpaTtsModel, {});
+    QString modelId = pickModelId(ttsBase, m_sherpaTtsModel, {QStringLiteral("vits-melo-tts-zh_en")});
     if (modelId.isEmpty()) return {};
+
+    if (modelId.startsWith(QStringLiteral("matcha-"), Qt::CaseInsensitive))
+    {
+        const QString preferred = QStringLiteral("vits-melo-tts-zh_en");
+        const QString p = QDir(ttsBase).filePath(preferred);
+        if (QFileInfo::exists(p) && QFileInfo(p).isDir())
+        {
+            modelId = preferred;
+        }
+        else
+        {
+            const QStringList dirs = listModelDirs(ttsBase);
+            for (const QString& id : dirs)
+            {
+                if (id.startsWith(QStringLiteral("matcha-"), Qt::CaseInsensitive))
+                    continue;
+                const QDir one(QDir(ttsBase).filePath(id));
+                const QString tokens = firstMatchFile(one, {QStringLiteral("tokens.txt")});
+                const QString model = firstMatchFile(one, {QStringLiteral("model.onnx"), QStringLiteral("*.onnx")});
+                if (!tokens.isEmpty() && !model.isEmpty())
+                {
+                    modelId = id;
+                    break;
+                }
+            }
+        }
+    }
+
     const QDir d(QDir(ttsBase).filePath(modelId));
 
     const QString tokens = firstMatchFile(d, {QStringLiteral("tokens.txt")});

@@ -4,6 +4,7 @@
 #include <QGuiApplication>
 #include <QPalette>
 #include <QStyleHints>
+#include <QtGlobal>
 
 namespace EraStyleColor
 {
@@ -74,11 +75,15 @@ inline bool isDark()
 
     if (const QStyleHints* hints = QGuiApplication::styleHints())
     {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
         const Qt::ColorScheme scheme = hints->colorScheme();
         if (scheme == Qt::ColorScheme::Dark)
             return true;
         if (scheme == Qt::ColorScheme::Light)
             return false;
+#else
+        Q_UNUSED(hints);
+#endif
     }
 
     const QPalette pal = QGuiApplication::palette();

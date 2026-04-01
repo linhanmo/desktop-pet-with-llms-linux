@@ -260,6 +260,7 @@ void EraComboBox::init()
     connect(this, &QComboBox::currentIndexChanged, this, [this](int) { update(); });
     if (auto* hints = QGuiApplication::styleHints())
     {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
         connect(hints, &QStyleHints::colorSchemeChanged, this, [this](Qt::ColorScheme) {
             QTimer::singleShot(0, this, [this] {
                 refreshPopupStyle();
@@ -267,6 +268,9 @@ void EraComboBox::init()
                 update();
             });
         });
+#else
+        Q_UNUSED(hints);
+#endif
     }
     updateColors(false);
 }

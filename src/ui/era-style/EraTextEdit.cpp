@@ -39,9 +39,13 @@ EraTextEdit::EraTextEdit(QWidget* parent)
     EraStyle::installHoverScrollBars(this, true, false);
     if (auto* hints = QGuiApplication::styleHints())
     {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
         connect(hints, &QStyleHints::colorSchemeChanged, this, [this](Qt::ColorScheme) {
             QTimer::singleShot(0, this, [this] { updateColors(); });
         });
+#else
+        Q_UNUSED(hints);
+#endif
     }
     updateColors();
 }

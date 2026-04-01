@@ -18,8 +18,11 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
+#include <QImageReader>
 #include <algorithm>
+#if AMAIGIRL_ENABLE_LIVE2D
 #include "engine/Renderer.hpp"
+#endif
 #include "common/SettingsManager.hpp"
 #include "ui/SettingsWindow.hpp"
 #include "ai/ChatController.hpp"
@@ -90,6 +93,12 @@ void installStartupLogger()
         }
         ts << t << " [" << level << "] " << msg << "\n";
         ts.flush();
+        if (type == QtWarningMsg || type == QtCriticalMsg || type == QtFatalMsg)
+        {
+            const QByteArray out = (t + QStringLiteral(" [") + level + QStringLiteral("] ") + msg + QStringLiteral("\n")).toUtf8();
+            ::fwrite(out.constData(), 1, (size_t)out.size(), stderr);
+            ::fflush(stderr);
+        }
     });
 
     {
@@ -803,6 +812,7 @@ static QString screenSignature(QScreen* s)
 }
 
 // Reset window geometry for a target screen (same intent as clicking "还原初始状态").
+#if AMAIGIRL_ENABLE_LIVE2D
 static void resetWindowForScreen(QMainWindow& win, QScreen* screen, Renderer* renderer)
 {
     if (!screen) screen = QGuiApplication::primaryScreen();
@@ -820,6 +830,7 @@ static void resetWindowForScreen(QMainWindow& win, QScreen* screen, Renderer* re
     // Persist which display context produced this geometry
     SettingsManager::instance().setWindowGeometryScreen(screenSignature(screen));
 }
+#endif
 
 // Return true if the window rect intersects any screen's available area by at least a few pixels.
 static bool isRectVisibleOnAnyScreen(const QRect& r)
@@ -882,6 +893,29 @@ int main(int argc, char *argv[]) {
 
     // Work around a macOS/Qt shutdown crash in QApplication::~QApplication by
     // letting the process exit without running this destructor.
+#if defined(Q_OS_LINUX)
+    const QByteArray qpa = qgetenv("QT_QPA_PLATFORM").trimmed();
+    if (qpa.isEmpty() || qpa.startsWith(QByteArrayLiteral("wayland")))
+    {
+        const QByteArray waylandDisplay = qgetenv("WAYLAND_DISPLAY");
+        const QByteArray x11Display = qgetenv("DISPLAY");
+        bool waylandOk = false;
+        const QByteArray xdgRuntimeDir = qgetenv("XDG_RUNTIME_DIR");
+        if (!waylandDisplay.trimmed().isEmpty() && !xdgRuntimeDir.trimmed().isEmpty())
+        {
+            const QString sockPath = QDir(QString::fromLocal8Bit(xdgRuntimeDir)).filePath(QString::fromLocal8Bit(waylandDisplay));
+            waylandOk = QFileInfo::exists(sockPath);
+        }
+        if (!waylandOk && !x11Display.trimmed().isEmpty())
+        {
+            qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("xcb"));
+        }
+    }
+#endif
+    const int defaultAllocMb = 1024;
+    bool okAlloc = false;
+    const int allocMb = qEnvironmentVariableIntValue("AMAIGIRL_IMAGE_ALLOC_LIMIT_MB", &okAlloc);
+    QImageReader::setAllocationLimit(okAlloc ? allocMb : defaultAllocMb);
     auto* appPtr = new QApplication(argc, argv);
     QApplication& app = *appPtr;
 #if defined(Q_OS_LINUX)
@@ -953,6 +987,54 @@ int main(int argc, char *argv[]) {
     // The underlying Qt audio subsystem and WinRT COM threading model have severe conflicts.
     // We rely solely on Qt's permission request or user's manual authorization.
 #endif
+
+#if !AMAIGIRL_ENABLE_LIVE2D
+    ChatWindow chatWindow;
+    SettingsWindow settingsWindow;
+    ChatController chatCtl;
+    chatCtl.setChatWindow(&chatWindow);
+
+    QSystemTrayIcon tray(appIcon);
+    tray.setToolTip(QStringLiteral("XiaoMo"));
+
+    QMenu trayMenu;
+    QAction openChatAction(QObject::tr("聊天(&T)"), &trayMenu);
+    QAction openSettingsAction(QObject::tr("设置(&S)"), &trayMenu);
+    QAction quitAction(QObject::tr("退出(&Q)"), &trayMenu);
+
+    trayMenu.addAction(&openChatAction);
+    trayMenu.addAction(&openSettingsAction);
+    trayMenu.addSeparator();
+    trayMenu.addAction(&quitAction);
+    tray.setContextMenu(&trayMenu);
+
+    QObject::connect(&openChatAction, &QAction::triggered, &app, [&]{
+        chatWindow.show();
+        chatWindow.raise();
+        chatWindow.activateWindow();
+        if (auto* wh = chatWindow.windowHandle()) wh->requestActivate();
+    });
+    QObject::connect(&openSettingsAction, &QAction::triggered, &app, [&]{
+        settingsWindow.show();
+        settingsWindow.raise();
+        settingsWindow.activateWindow();
+        if (auto* wh = settingsWindow.windowHandle()) wh->requestActivate();
+    });
+    QObject::connect(&quitAction, &QAction::triggered, &app, [&]{
+        tray.hide();
+        app.quit();
+    });
+    QObject::connect(&tray, &QSystemTrayIcon::activated, &app, [&](QSystemTrayIcon::ActivationReason reason){
+        if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) {
+            openChatAction.trigger();
+        }
+    });
+    tray.show();
+
+    chatWindow.show();
+    centerOnCurrentScreen(&chatWindow);
+    return app.exec();
+#else
 
     QMainWindow win;
     win.setWindowFlag(Qt::FramelessWindowHint, true);
@@ -1589,4 +1671,5 @@ int main(int argc, char *argv[]) {
         qDebug() << "[FATAL] Unknown unhandled exception in main loop.";
         return 1;
     }
+#endif
 }
